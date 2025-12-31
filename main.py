@@ -18,7 +18,7 @@ import sys
 import os
 import io
 from loguru import logger as log
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 import math
 
 import globals as gl
@@ -428,51 +428,457 @@ class Info(MediaAction):
         # Update image
         self.set_center_label(self.get_settings().get("seperator_text", "--"), font_size=12)
 
-
-
 class ThumbnailBackground(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.title: str = None
-        self.artist: str = None
+        self.original_background_image = None  # Cache the original background
+        self.cached_background_path = None  # Track which background is cached
+        
+        # Optimization: Track state to detect changes
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
+        self.last_coords = None  # Track position for grid modes
+
+    def __del__(self):
+        """Cleanup cached images when object is destroyed."""
+        if hasattr(self, 'original_background_image') and self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception:
+                pass
 
     def on_ready(self):
-        self.title = None
-        self.artist = None
+        # Clean up old cache before resetting
+        if self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception:
+                pass
+        self.original_background_image = None
+        self.cached_background_path = None
+        
+        # Initialize optimization caches with current state (no update triggered)
+        settings = self.get_settings()
+        if settings is not None:
+            self.last_size_mode = settings.get("size_mode", "stretch")
+        else:
+            self.last_size_mode = None
+            
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        if isinstance(thumbnail_data, list) and thumbnail_data:
+            self.last_thumbnail_path = thumbnail_data[0]
+        else:
+            self.last_thumbnail_path = None
+            
+        self.last_background_path = self.get_background_path()
+        
+        # Track position for grid modes
+        if hasattr(self.input_ident, 'coords'):
+            self.last_coords = self.input_ident.coords
+        else:
+            self.last_coords = None
+        
+        # Trigger initial update to display start state
+        self.update_image()
 
     def on_tick(self):
-        self.update_image()
+        # Optimization: Only update if something changed
+        if self._should_update():
+            self.update_image()
+    
+    def _should_update(self) -> bool:
+        """Check if update is needed based on state changes."""
+        
+        # Check if media is playing - early exit if not
+        title = self.plugin_base.mc.title(self.get_player_name())
+        artist = self.plugin_base.mc.artist(self.get_player_name())
+        
+        # If both title and artist are None, no media is playing
+        if title is None and artist is None:
+            # check if we were previously showing a thumbnail
+            if self.last_thumbnail_path is not None:
+                log.trace("ThumbnailBackground: Media stopped, restoring original background")
+                return True
+            return False
+        
+        settings = self.get_settings()
+        if settings is None:
+            log.trace("ThumbnailBackground: No settings available, skipping update check")
+            return False
+        
+        # Check size mode change
+        size_mode = settings.get("size_mode", "stretch")
+        if size_mode != self.last_size_mode:
+            log.trace(f"ThumbnailBackground: Size mode changed from {self.last_size_mode} to {size_mode}")
+            return True
+
+        # Check position change (relevant for grid modes)
+        current_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
+        if current_coords != self.last_coords:
+            log.trace(f"ThumbnailBackground: Position changed from {self.last_coords} to {current_coords}")
+            return True
+
+        # Check thumbnail path change (avoid loading full image)
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        thumbnail_path = None
+        if isinstance(thumbnail_data, list) and thumbnail_data:
+            thumbnail_path = thumbnail_data[0]
+        
+        if thumbnail_path != self.last_thumbnail_path:
+            log.trace(f"ThumbnailBackground: Thumbnail path changed from {self.last_thumbnail_path} to {thumbnail_path}")
+            return True
+        
+        # Check background path change
+        current_bg_path = self.get_background_path()
+        if current_bg_path != self.last_background_path:
+            log.trace(f"ThumbnailBackground: Background path changed from {self.last_background_path} to {current_bg_path}")
+            return True
+        
+        return False
+
+    def get_config_rows(self) -> "list[Adw.PreferencesRow]":
+        # Get parent rows (player selector only, exclude label and thumbnail toggles)
+        parent_rows = super().get_config_rows()
+        # Keep only the player selector (first row)
+        rows = [parent_rows[0]]
+        
+        # Add size mode selector
+        self.size_mode_model = Gtk.StringList()
+        self.size_mode_selector = Adw.ComboRow(
+            model=self.size_mode_model,
+            title=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.label"),
+            subtitle=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.subtitle")
+        )
+        
+        # Populate size options
+        size_options = [
+            ("1x1", "1x1"),
+            ("2x2", "2x2"),
+            ("3x3", "3x3"),
+            ("4x4", "4x4"),
+            ("stretch", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.stretch")),
+            ("fill", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.fill"))
+        ]
+        
+        self.size_mode_options = [opt[0] for opt in size_options]
+        for _, label in size_options:
+            self.size_mode_model.append(label)
+        
+        self.load_size_mode_default()
+        self.size_mode_selector.connect("notify::selected", self.on_change_size_mode)
+        
+        rows.append(self.size_mode_selector)
+        return rows
+    
+    def load_size_mode_default(self):
+        """
+        Load the default size mode setting and apply it to the size mode selector.
+        This reads the ``"size_mode"`` value from this action's persisted settings
+        via the ``get_settings`` method. If no value is present, it stores and uses
+        ``"stretch"`` as the default, matching the legacy behavior. The method
+        then selects the corresponding option in ``self.size_mode_selector``; if
+        the stored value is not one of the known options, it falls back to the
+        index used for the legacy ``"stretch"`` mode.
+        """
+        settings = self.get_settings()
+        if settings is None:
+            return
+        
+        size_mode = settings.setdefault("size_mode", "stretch")
+        
+        # Select the appropriate mode
+        try:
+            selected_index = self.size_mode_options.index(size_mode)
+        except ValueError:
+            # Default to "stretch" if the stored mode is invalid
+            selected_index = self.size_mode_options.index("stretch")
+        
+        self.size_mode_selector.set_selected(selected_index)
+    
+    def on_change_size_mode(self, combo, *args):
+        """
+        When the user selects a different size for the thumbnail display in the UI, this
+        callback stores the chosen mode in the action settings and triggers a background
+        image refresh to apply the new sizing behavior.
+        :param combo: The size mode selector widget (e.g. an Adw.ComboRow) that
+            emitted the change notification.
+        :param args: Additional signal parameters provided by the toolkit,
+            which are currently ignored.
+        """
+        settings = self.get_settings()
+        selected_index = combo.get_selected()
+        if selected_index < len(self.size_mode_options):
+            settings["size_mode"] = self.size_mode_options[selected_index]
+            self.set_settings(settings)
+            self.update_image()
 
     def update_image(self):
         if not self.get_is_present():
             return
         
-        ## Thumbnail
-        thumbnail = self.plugin_base.mc.thumbnail(self.get_player_name())
-        if isinstance(thumbnail, list):
-            if thumbnail[0] is None:
-                thumbnail = None
+        settings = self.get_settings()
+        if settings is None:
+            return
+        
+        size_mode = settings.setdefault("size_mode", "stretch")
+        self.last_size_mode = size_mode
+        
+        # Get thumbnail
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        thumbnail_path = None
+        if isinstance(thumbnail_data, list):
+            if thumbnail_data[0] is None:
+                self.last_thumbnail_path = None
+                self.restore_original_background()
                 return
+            thumbnail_path = thumbnail_data[0]
             try:
-                thumbnail = Image.open(thumbnail[0])
-            except:
-                thumbnail = None
+                thumbnail = Image.open(thumbnail_path)
+            except Exception:
+                self.last_thumbnail_path = None
+                self.restore_original_background()
+                return
+        else:
+            thumbnail = thumbnail_data
                 
         if thumbnail is None:
-            self.clear()
-        else:    
-            self.deck_controller.background.set_image(
-                image=BackgroundImage(
-                    self.deck_controller,
-                    image=thumbnail,
-                ),
-                update=True
-            )
+            self.last_thumbnail_path = None
+            self.restore_original_background()
+            return
+        
+        # Track thumbnail path, background path, and position
+        self.last_thumbnail_path = thumbnail_path
+        self.last_background_path = self.get_background_path()
+        if hasattr(self.input_ident, 'coords'):
+            self.last_coords = self.input_ident.coords
+        else:
+            self.last_coords = None
+        
+        # Handle different size modes
+        if size_mode == "stretch":
+            # Stretch to exact deck dimensions (may distort aspect ratio)
+            full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+            self.set_stretch_background(thumbnail)
+        elif size_mode == "fill":
+            self.set_fill_screen_background(thumbnail)
+        else:
+            # Grid sizes (1x1, 2x2, 3x3, 4x4)
+            self.set_grid_sized_background(thumbnail, size_mode)
+
+    def get_deck_dimensions(self):
+        """Helper to get full deck dimensions."""
+        key_rows, key_cols = self.deck_controller.deck.key_layout()
+        key_width, key_height = self.deck_controller.get_key_image_size()
+        spacing_x, spacing_y = self.deck_controller.key_spacing
+        
+        full_width = key_width * key_cols + spacing_x * (key_cols - 1)
+        full_height = key_height * key_rows + spacing_y * (key_rows - 1)
+        
+        return full_width, full_height, key_width, key_height, spacing_x, spacing_y
+
+    def set_stretch_background(self, thumbnail: Image.Image):
+        """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+        stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.LANCZOS)
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=stretched_thumbnail),
+            update=True
+        )
+
+    def set_fill_screen_background(self, thumbnail: Image.Image):
+        """Scale thumbnail to fill the screen by its longest side, centered."""
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+        
+        # Calculate scaling to fill by longest side
+        thumb_width, thumb_height = thumbnail.size
+        scale = max(full_width / thumb_width, full_height / thumb_height)
+        
+        new_width = int(thumb_width * scale)
+        new_height = int(thumb_height * scale)
+        
+        # Resize and center thumbnail
+        resized_thumbnail = thumbnail.resize((new_width, new_height), Image.LANCZOS)
+        canvas = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+        
+        x_offset = (full_width - new_width) // 2
+        y_offset = (full_height - new_height) // 2
+        canvas.paste(resized_thumbnail, (x_offset, y_offset))
+        
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=canvas),
+            update=True
+        )
+
+    def set_grid_sized_background(self, thumbnail: Image.Image, size_mode: str):
+        """Place thumbnail at specific grid size overlaid on current background."""
+        try:
+            grid_size = int(size_mode[0])
+        except Exception:
+            # Fallback to stretch behavior if parsing fails
+            self.set_stretch_background(thumbnail)
+            return
+        
+        # Get action position
+        if not hasattr(self.input_ident, 'coords'):
+            # Fallback to stretch behavior if no coords available
+            self.set_stretch_background(thumbnail)
+            return
+        
+        col, row = self.input_ident.coords
+        full_width, full_height, key_width, key_height, spacing_x, spacing_y = self.get_deck_dimensions()
+        
+        # Get original background and calculate thumbnail dimensions
+        background_canvas = self.get_original_background(full_width, full_height)
+        thumb_width = key_width * grid_size + spacing_x * (grid_size - 1)
+        thumb_height = key_height * grid_size + spacing_y * (grid_size - 1)
+        
+        # Resize and position thumbnail
+        resized_thumbnail = thumbnail.resize((thumb_width, thumb_height), Image.LANCZOS)
+        x_pos = col * (key_width + spacing_x)
+        y_pos = row * (key_height + spacing_y)
+        
+        background_canvas.paste(resized_thumbnail, (x_pos, y_pos))
+        
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=background_canvas),
+            update=True
+        )
+    
+    def get_original_background(self, full_width: int, full_height: int) -> Image.Image:
+        """Get the original deck or page background without any thumbnail overlays."""
+        # Get the current background path
+        background_path = self.get_background_path()
+        
+        def _reset_background_cache():
+            if self.original_background_image is not None:
+                try:
+                    self.original_background_image.close()
+                except Exception as e:
+                    log.error(f"Failed to close background image: {e}")
+            self.original_background_image = None
+            self.cached_background_path = None
+        
+        # If no background is configured, always return black (don't cache)
+        if not background_path or not os.path.isfile(background_path):
+            _reset_background_cache()
+            return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+        
+        # If background path has changed, invalidate cache
+        if background_path != self.cached_background_path:
+            _reset_background_cache()
+        
+        # Check if current background is a video/gif (should return black, not cached image)
+        is_video = background_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif'))
+        if is_video:
+            _reset_background_cache()
+            return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+        
+        # Return cached background if available
+        if self.original_background_image is not None:
+            try:
+                # Return a copy to prevent modifications to the cached image
+                # This is necessary because callers may modify the returned image
+                # (e.g., pasting thumbnails in grid mode)
+                return self.original_background_image.copy()
+            except Exception as e:
+                log.error(f"Failed to copy cached background image: {e}")
+                _reset_background_cache()
+        
+        # Load background from file
+        try:
+            # Load and fit image to deck size
+            with Image.open(background_path) as bg_image:
+                result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.LANCZOS)
+                if result.mode != "RGBA":
+                    result = result.convert("RGBA")
+            
+            # Cache the result with its path
+            self.original_background_image = result
+            self.cached_background_path = background_path
+            return self.original_background_image.copy()
+        except Exception as e:
+            log.warning(f"Failed to load background from {background_path}: {e}")
+            if self.original_background_image is not None:
+                try:
+                    self.original_background_image.close()
+                except Exception as e:
+                    log.error(f"Failed to close background image: {e}")
+            self.original_background_image = None
+            self.cached_background_path = None
+            return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+    
+    def get_background_path(self) -> str:
+        """Get the configured background path from deck or page settings."""
+        deck_settings = self.deck_controller.get_deck_settings()
+        deck_bg = deck_settings.get("background", {})
+        page_bg = self.deck_controller.active_page.dict.get("background", {})
+        
+        # Priority order:
+        # 1. Page override enabled
+        #    - show enabled: use page background
+        #    - show disabled: return none
+        # 2. Page override disabled
+        #    - show enabled: use deck background
+        #    - show disabled: return none
+        # 3. No background configured: return none
+
+        # Check if page is overriding
+        if page_bg.get("overwrite", False):
+            # Page is overriding - check if show is enabled
+            if page_bg.get("show", False):
+                path = page_bg.get("path")
+                if path:
+                    return path
+            # Page override with show disabled = use black
+            return None
+        
+        # Page not overriding - check deck background
+        if deck_bg.get("enable", False):
+            path = deck_bg.get("path")
+            if path:
+                return path
+        
+        return None
+
+    def restore_original_background(self):
+        """Restore the page/deck background when no media is available."""
+        if not self.get_is_present():
+            return
+        
+        # Update tracking variables for no-media state
+        self.last_thumbnail_path = None
+        current_bg_path = self.get_background_path()
+        self.last_background_path = current_bg_path
+        
+        # Get and display the original background
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+        background = self.get_original_background(full_width, full_height)
+        
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=background),
+            update=True
+        )
 
     def clear(self):
         if not self.get_is_present():
             return
+        # Explicitly close and delete cached image to free memory
+        if self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception as e:
+                log.error(f"Failed to close background image: {e}")
+            self.original_background_image = None
+        self.cached_background_path = None
+        
+        # Reset tracking variables
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
+        self.last_coords = None
+        
         self.deck_controller.background.set_image(
             image=None,
             update=True
@@ -483,7 +889,6 @@ class ThumbnailBackground(MediaAction):
 
     def on_remove(self) -> None:
         self.clear()
-
 
 class MediaPlugin(PluginBase):
     def __init__(self):
