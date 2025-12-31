@@ -439,9 +439,23 @@ class ThumbnailBackground(MediaAction):
         self.original_background_image = None  # Cache the original background
         self.cached_background_path = None  # Track which background is cached
 
+    def __del__(self):
+        """Cleanup cached background image when object is destroyed."""
+        if hasattr(self, 'original_background_image') and self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception:
+                pass
+
     def on_ready(self):
         self.title = None
         self.artist = None
+        # Clean up old cache before resetting
+        if self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception:
+                pass
         self.original_background_image = None
         self.cached_background_path = None
 
@@ -573,6 +587,7 @@ class ThumbnailBackground(MediaAction):
         return full_width, full_height, key_width, key_height, spacing_x, spacing_y
 
     def set_stretch_background(self, thumbnail: Image.Image):
+        """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.LANCZOS)
         self.deck_controller.background.set_image(
@@ -615,7 +630,7 @@ class ThumbnailBackground(MediaAction):
         
         # Get action position
         if not hasattr(self.input_ident, 'coords'):
-            # Fallback to stretch behavior if no co-ords available
+            # Fallback to stretch behavior if no coords available
             self.set_stretch_background(thumbnail)
             return
         
@@ -648,7 +663,7 @@ class ThumbnailBackground(MediaAction):
             if self.original_background_image is not None:
                 try:
                     self.original_background_image.close()
-                except Exception:
+                except Exception as e:
                     log.error(f"Failed to close background image: {e}")
             self.original_background_image = None
             self.cached_background_path = None
@@ -717,7 +732,7 @@ class ThumbnailBackground(MediaAction):
         #    - show disabled: return none
         # 3. No background configured: return none
 
-        # Check if page is overridin g
+        # Check if page is overriding
         if page_bg.get("overwrite", False):
             # Page is overriding - check if show is enabled
             if page_bg.get("show", False):
