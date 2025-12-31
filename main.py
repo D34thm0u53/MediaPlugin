@@ -91,7 +91,7 @@ class Play(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
 
 
@@ -167,7 +167,7 @@ class Pause(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
 
 
@@ -253,7 +253,7 @@ class PlayPause(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
 
 
@@ -304,7 +304,7 @@ class Next(MediaAction):
             elif isinstance(thumbnail, list):
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
                 
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
@@ -351,7 +351,7 @@ class Previous(MediaAction):
             elif isinstance(thumbnail, list):
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
 
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
@@ -396,7 +396,7 @@ class Info(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except Exception:
+                except:
                     return
                 
         self.set_media(image=thumbnail)
