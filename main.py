@@ -91,7 +91,7 @@ class Play(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
 
 
@@ -167,7 +167,7 @@ class Pause(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
 
 
@@ -253,7 +253,7 @@ class PlayPause(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
 
 
@@ -304,7 +304,7 @@ class Next(MediaAction):
             elif isinstance(thumbnail, list):
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
                 
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
@@ -351,7 +351,7 @@ class Previous(MediaAction):
             elif isinstance(thumbnail, list):
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
 
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
@@ -396,7 +396,7 @@ class Info(MediaAction):
                     return
                 try:
                     thumbnail = Image.open(thumbnail[0])
-                except:
+                except Exception:
                     return
                 
         self.set_media(image=thumbnail)
@@ -509,11 +509,10 @@ class ThumbnailBackground(MediaAction):
             except ValueError:
                 # Fallback to first option if "stretch" is not available
                 index = 0
-        self.size_mode_selector.set_selected(index)
     
     def on_change_size_mode(self, combo, *args):
         """
-        When the user selects a different size for the thumnail disaply in the UI, this
+        When the user selects a different size for the thumbnail display in the UI, this
         callback stores the chosen mode in the action settings and triggers a background
         image refresh to apply the new sizing behavior.
         :param combo: The size mode selector widget (e.g. an Adw.ComboRow) that
@@ -608,7 +607,7 @@ class ThumbnailBackground(MediaAction):
         """Place thumbnail at specific grid size overlaid on current background."""
         try:
             grid_size = int(size_mode[0])
-        except:
+        except Exception:
             # Fallback to stretch if parsing fails
             self.deck_controller.background.set_image(
                 image=BackgroundImage(self.deck_controller, image=thumbnail),
@@ -649,40 +648,30 @@ class ThumbnailBackground(MediaAction):
         # Get the current background path
         background_path = self.get_background_path()
         
-        # If no background is configured, always return black (don't cache)
-        if not background_path or not os.path.isfile(background_path):
+        def _reset_background_cache():
             if self.original_background_image is not None:
                 try:
                     self.original_background_image.close()
-                except:
+                except Exception:
                     pass
             self.original_background_image = None
             self.cached_background_path = None
+        
+        # If no background is configured, always return black (don't cache)
+        if not background_path or not os.path.isfile(background_path):
+            _reset_background_cache()
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
         # If background path has changed, invalidate cache
         if background_path != self.cached_background_path:
-            if self.original_background_image is not None:
-                try:
-                    self.original_background_image.close()
-                except:
-                    pass
-            self.original_background_image = None
-            self.cached_background_path = None
+            _reset_background_cache()
         
         # Return cached background if available
         if self.original_background_image is not None:
             try:
                 return self.original_background_image.copy()
             except Exception:
-                if self.original_background_image is not None:
-                    try:
-                        self.original_background_image.close()
-                    except:
-                        pass
-                self.original_background_image = None
-                self.cached_background_path = None
-                return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+                _reset_background_cache()
         
         # Load background from file
         try:
@@ -705,7 +694,7 @@ class ThumbnailBackground(MediaAction):
             if self.original_background_image is not None:
                 try:
                     self.original_background_image.close()
-                except:
+                except Exception:
                     pass
             self.original_background_image = None
             self.cached_background_path = None
@@ -751,7 +740,7 @@ class ThumbnailBackground(MediaAction):
         if self.original_background_image is not None:
             try:
                 self.original_background_image.close()
-            except:
+            except Exception:
                 pass
             self.original_background_image = None
         self.cached_background_path = None
