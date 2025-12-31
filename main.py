@@ -649,7 +649,7 @@ class ThumbnailBackground(MediaAction):
                 try:
                     self.original_background_image.close()
                 except Exception:
-                    pass
+                    log.error(f"Failed to close background image: {e}")
             self.original_background_image = None
             self.cached_background_path = None
         
@@ -698,7 +698,6 @@ class ThumbnailBackground(MediaAction):
                     self.original_background_image.close()
                 except Exception as e:
                     log.error(f"Failed to close background image: {e}")
-                    pass
             self.original_background_image = None
             self.cached_background_path = None
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
@@ -745,7 +744,6 @@ class ThumbnailBackground(MediaAction):
                 self.original_background_image.close()
             except Exception as e:
                 log.error(f"Failed to close background image: {e}")
-                pass
             self.original_background_image = None
         self.cached_background_path = None
         self.deck_controller.background.set_image(
