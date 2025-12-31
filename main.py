@@ -438,9 +438,14 @@ class ThumbnailBackground(MediaAction):
         self.artist: str = None
         self.original_background_image = None  # Cache the original background
         self.cached_background_path = None  # Track which background is cached
+        
+        # Optimization: Track state to detect changes
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
 
     def __del__(self):
-        """Cleanup cached background image when object is destroyed."""
+        """Cleanup cached images when object is destroyed."""
         if hasattr(self, 'original_background_image') and self.original_background_image is not None:
             try:
                 self.original_background_image.close()
@@ -458,9 +463,43 @@ class ThumbnailBackground(MediaAction):
                 pass
         self.original_background_image = None
         self.cached_background_path = None
+        
+        # Reset optimization caches
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
 
     def on_tick(self):
-        self.update_image()
+        # Optimization: Only update if something changed
+        if self._should_update():
+            self.update_image()
+    
+    def _should_update(self) -> bool:
+        """Check if update is needed based on state changes."""
+        settings = self.get_settings()
+        if settings is None:
+            return False
+        
+        # Check size mode change
+        size_mode = settings.get("size_mode", "stretch")
+        if size_mode != self.last_size_mode:
+            return True
+        
+        # Check thumbnail path change (avoid loading full image)
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        thumbnail_path = None
+        if isinstance(thumbnail_data, list) and thumbnail_data:
+            thumbnail_path = thumbnail_data[0]
+        
+        if thumbnail_path != self.last_thumbnail_path:
+            return True
+        
+        # Check background path change
+        current_bg_path = self.get_background_path()
+        if current_bg_path != self.last_background_path:
+            return True
+        
+        return False
 
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
         # Get parent rows (player selector only, exclude label and thumbnail toggles)
@@ -547,22 +586,34 @@ class ThumbnailBackground(MediaAction):
             return
         
         size_mode = settings.setdefault("size_mode", "stretch")
+        self.last_size_mode = size_mode
         
         # Get thumbnail
-        thumbnail = self.plugin_base.mc.thumbnail(self.get_player_name())
-        if isinstance(thumbnail, list):
-            if thumbnail[0] is None:
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        thumbnail_path = None
+        if isinstance(thumbnail_data, list):
+            if thumbnail_data[0] is None:
+                self.last_thumbnail_path = None
                 self.clear()
                 return
+            thumbnail_path = thumbnail_data[0]
             try:
-                thumbnail = Image.open(thumbnail[0])
+                thumbnail = Image.open(thumbnail_path)
             except Exception:
+                self.last_thumbnail_path = None
                 self.clear()
                 return
+        else:
+            thumbnail = thumbnail_data
                 
         if thumbnail is None:
+            self.last_thumbnail_path = None
             self.clear()
             return
+        
+        # Track thumbnail path and background path
+        self.last_thumbnail_path = thumbnail_path
+        self.last_background_path = self.get_background_path()
         
         # Handle different size modes
         if size_mode == "stretch":
@@ -761,6 +812,12 @@ class ThumbnailBackground(MediaAction):
                 log.error(f"Failed to close background image: {e}")
             self.original_background_image = None
         self.cached_background_path = None
+        
+        # Reset tracking variables
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
+        
         self.deck_controller.background.set_image(
             image=None,
             update=True
