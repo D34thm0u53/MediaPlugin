@@ -428,14 +428,10 @@ class Info(MediaAction):
         # Update image
         self.set_center_label(self.get_settings().get("seperator_text", "--"), font_size=12)
 
-
-
 class ThumbnailBackground(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.title: str = None
-        self.artist: str = None
         self.original_background_image = None  # Cache the original background
         self.cached_background_path = None  # Track which background is cached
         
@@ -443,6 +439,7 @@ class ThumbnailBackground(MediaAction):
         self.last_thumbnail_path = None
         self.last_size_mode = None
         self.last_background_path = None
+        self.last_coords = None  # Track position for grid modes
 
     def __del__(self):
         """Cleanup cached images when object is destroyed."""
@@ -453,8 +450,6 @@ class ThumbnailBackground(MediaAction):
                 pass
 
     def on_ready(self):
-        self.title = None
-        self.artist = None
         # Clean up old cache before resetting
         if self.original_background_image is not None:
             try:
@@ -464,10 +459,29 @@ class ThumbnailBackground(MediaAction):
         self.original_background_image = None
         self.cached_background_path = None
         
-        # Reset optimization caches
-        self.last_thumbnail_path = None
-        self.last_size_mode = None
-        self.last_background_path = None
+        # Initialize optimization caches with current state (no update triggered)
+        settings = self.get_settings()
+        if settings is not None:
+            self.last_size_mode = settings.get("size_mode", "stretch")
+        else:
+            self.last_size_mode = None
+            
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        if isinstance(thumbnail_data, list) and thumbnail_data:
+            self.last_thumbnail_path = thumbnail_data[0]
+        else:
+            self.last_thumbnail_path = None
+            
+        self.last_background_path = self.get_background_path()
+        
+        # Track position for grid modes
+        if hasattr(self.input_ident, 'coords'):
+            self.last_coords = self.input_ident.coords
+        else:
+            self.last_coords = None
+        
+        # Trigger initial update to display start state
+        self.update_image()
 
     def on_tick(self):
         # Optimization: Only update if something changed
@@ -476,15 +490,36 @@ class ThumbnailBackground(MediaAction):
     
     def _should_update(self) -> bool:
         """Check if update is needed based on state changes."""
+        
+        # Check if media is playing - early exit if not
+        title = self.plugin_base.mc.title(self.get_player_name())
+        artist = self.plugin_base.mc.artist(self.get_player_name())
+        
+        # If both title and artist are None, no media is playing
+        if title is None and artist is None:
+            # check if we were previously showing a thumbnail
+            if self.last_thumbnail_path is not None:
+                log.trace("ThumbnailBackground: Media stopped, restoring original background")
+                return True
+            return False
+        
         settings = self.get_settings()
         if settings is None:
+            log.trace("ThumbnailBackground: No settings available, skipping update check")
             return False
         
         # Check size mode change
         size_mode = settings.get("size_mode", "stretch")
         if size_mode != self.last_size_mode:
+            log.trace(f"ThumbnailBackground: Size mode changed from {self.last_size_mode} to {size_mode}")
             return True
-        
+
+        # Check position change (relevant for grid modes)
+        current_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
+        if current_coords != self.last_coords:
+            log.trace(f"ThumbnailBackground: Position changed from {self.last_coords} to {current_coords}")
+            return True
+
         # Check thumbnail path change (avoid loading full image)
         thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
         thumbnail_path = None
@@ -492,11 +527,13 @@ class ThumbnailBackground(MediaAction):
             thumbnail_path = thumbnail_data[0]
         
         if thumbnail_path != self.last_thumbnail_path:
+            log.trace(f"ThumbnailBackground: Thumbnail path changed from {self.last_thumbnail_path} to {thumbnail_path}")
             return True
         
         # Check background path change
         current_bg_path = self.get_background_path()
         if current_bg_path != self.last_background_path:
+            log.trace(f"ThumbnailBackground: Background path changed from {self.last_background_path} to {current_bg_path}")
             return True
         
         return False
@@ -594,26 +631,30 @@ class ThumbnailBackground(MediaAction):
         if isinstance(thumbnail_data, list):
             if thumbnail_data[0] is None:
                 self.last_thumbnail_path = None
-                self.clear()
+                self.restore_original_background()
                 return
             thumbnail_path = thumbnail_data[0]
             try:
                 thumbnail = Image.open(thumbnail_path)
             except Exception:
                 self.last_thumbnail_path = None
-                self.clear()
+                self.restore_original_background()
                 return
         else:
             thumbnail = thumbnail_data
                 
         if thumbnail is None:
             self.last_thumbnail_path = None
-            self.clear()
+            self.restore_original_background()
             return
         
-        # Track thumbnail path and background path
+        # Track thumbnail path, background path, and position
         self.last_thumbnail_path = thumbnail_path
         self.last_background_path = self.get_background_path()
+        if hasattr(self.input_ident, 'coords'):
+            self.last_coords = self.input_ident.coords
+        else:
+            self.last_coords = None
         
         # Handle different size modes
         if size_mode == "stretch":
@@ -801,6 +842,25 @@ class ThumbnailBackground(MediaAction):
         
         return None
 
+    def restore_original_background(self):
+        """Restore the page/deck background when no media is available."""
+        if not self.get_is_present():
+            return
+        
+        # Update tracking variables for no-media state
+        self.last_thumbnail_path = None
+        current_bg_path = self.get_background_path()
+        self.last_background_path = current_bg_path
+        
+        # Get and display the original background
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+        background = self.get_original_background(full_width, full_height)
+        
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=background),
+            update=True
+        )
+
     def clear(self):
         if not self.get_is_present():
             return
@@ -817,6 +877,7 @@ class ThumbnailBackground(MediaAction):
         self.last_thumbnail_path = None
         self.last_size_mode = None
         self.last_background_path = None
+        self.last_coords = None
         
         self.deck_controller.background.set_image(
             image=None,
@@ -828,7 +889,6 @@ class ThumbnailBackground(MediaAction):
 
     def on_remove(self) -> None:
         self.clear()
-
 
 class MediaPlugin(PluginBase):
     def __init__(self):
