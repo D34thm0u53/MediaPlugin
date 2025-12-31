@@ -486,7 +486,7 @@ class ThumbnailBackground(MediaAction):
         """
         Load the default size mode setting and apply it to the size mode selector.
         This reads the ``"size_mode"`` value from this action's persisted settings
-        (via :meth:`get_settings`). If no value is present, it stores and uses
+        via the ``get_settings`` method. If no value is present, it stores and uses
         ``"stretch"`` as the default, matching the legacy behavior. The method
         then selects the corresponding option in ``self.size_mode_selector``; if
         the stored value is not one of the known options, it falls back to the
@@ -500,15 +500,12 @@ class ThumbnailBackground(MediaAction):
         
         # Select the appropriate mode
         try:
-            index = self.size_mode_options.index(size_mode)
-            self.size_mode_selector.set_selected(index)
+            selected_index = self.size_mode_options.index(size_mode)
         except ValueError:
-            # Default to legacy behavior: Stretch, resolved dynamically
-            try:
-                index = self.size_mode_options.index("stretch")
-            except ValueError:
-                # Fallback to first option if "stretch" is not available
-                index = 0
+            # Default to "stretch" if the stored mode is invalid
+            selected_index = self.size_mode_options.index("stretch")
+        
+        self.size_mode_selector.set_selected(selected_index)
     
     def on_change_size_mode(self, combo, *args):
         """
@@ -557,11 +554,7 @@ class ThumbnailBackground(MediaAction):
         if size_mode == "stretch":
             # Stretch to exact deck dimensions (may distort aspect ratio)
             full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
-            stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.LANCZOS)
-            self.deck_controller.background.set_image(
-                image=BackgroundImage(self.deck_controller, image=stretched_thumbnail),
-                update=True
-            )
+            self.set_stretch_background(thumbnail)
         elif size_mode == "fill":
             self.set_fill_screen_background(thumbnail)
         else:
@@ -578,6 +571,14 @@ class ThumbnailBackground(MediaAction):
         full_height = key_height * key_rows + spacing_y * (key_rows - 1)
         
         return full_width, full_height, key_width, key_height, spacing_x, spacing_y
+
+    def set_stretch_background(self, thumbnail: Image.Image):
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
+        stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.LANCZOS)
+        self.deck_controller.background.set_image(
+            image=BackgroundImage(self.deck_controller, image=stretched_thumbnail),
+            update=True
+        )
 
     def set_fill_screen_background(self, thumbnail: Image.Image):
         """Scale thumbnail to fill the screen by its longest side, centered."""
@@ -608,19 +609,14 @@ class ThumbnailBackground(MediaAction):
         try:
             grid_size = int(size_mode[0])
         except Exception:
-            # Fallback to stretch if parsing fails
-            self.deck_controller.background.set_image(
-                image=BackgroundImage(self.deck_controller, image=thumbnail),
-                update=True
-            )
+            # Fallback to stretch behavior if parsing fails
+            self.set_stretch_background(thumbnail)
             return
         
         # Get action position
         if not hasattr(self.input_ident, 'coords'):
-            self.deck_controller.background.set_image(
-                image=BackgroundImage(self.deck_controller, image=thumbnail),
-                update=True
-            )
+            # Fallback to stretch behavior if no co-ords available
+            self.set_stretch_background(thumbnail)
             return
         
         col, row = self.input_ident.coords
@@ -666,35 +662,42 @@ class ThumbnailBackground(MediaAction):
         if background_path != self.cached_background_path:
             _reset_background_cache()
         
+        # Check if current background is a video/gif (should return black, not cached image)
+        is_video = background_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif'))
+        if is_video:
+            _reset_background_cache()
+            return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+        
         # Return cached background if available
         if self.original_background_image is not None:
             try:
+                # Return a copy to prevent modifications to the cached image
+                # This is necessary because callers may modify the returned image
+                # (e.g., pasting thumbnails in grid mode)
                 return self.original_background_image.copy()
-            except Exception:
+            except Exception as e:
+                log.error(f"Failed to copy cached background image: {e}")
                 _reset_background_cache()
         
         # Load background from file
         try:
-            # We only handle images here; videos/gifs default to black
-            if background_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif')):
-                result = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
-            else:
-                # Load and fit image to deck size
-                with Image.open(background_path) as bg_image:
-                    result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.LANCZOS)
-                    if result.mode != "RGBA":
-                        result = result.convert("RGBA")
+            # Load and fit image to deck size
+            with Image.open(background_path) as bg_image:
+                result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.LANCZOS)
+                if result.mode != "RGBA":
+                    result = result.convert("RGBA")
             
             # Cache the result with its path
-            self.original_background_image = result.copy()
+            self.original_background_image = result
             self.cached_background_path = background_path
-            return result
+            return self.original_background_image.copy()
         except Exception as e:
             log.warning(f"Failed to load background from {background_path}: {e}")
             if self.original_background_image is not None:
                 try:
                     self.original_background_image.close()
-                except Exception:
+                except Exception as e:
+                    log.error(f"Failed to close background image: {e}")
                     pass
             self.original_background_image = None
             self.cached_background_path = None
@@ -709,13 +712,13 @@ class ThumbnailBackground(MediaAction):
         # Priority order:
         # 1. Page override enabled
         #    - show enabled: use page background
-        #    - show disabled: use black background
+        #    - show disabled: return none
         # 2. Page override disabled
         #    - show enabled: use deck background
-        #    - show disabled: use black background
-        # 3. No background configured: use black background
+        #    - show disabled: return none
+        # 3. No background configured: return none
 
-        # Check if page is overriding
+        # Check if page is overridin g
         if page_bg.get("overwrite", False):
             # Page is overriding - check if show is enabled
             if page_bg.get("show", False):
@@ -740,7 +743,8 @@ class ThumbnailBackground(MediaAction):
         if self.original_background_image is not None:
             try:
                 self.original_background_image.close()
-            except Exception:
+            except Exception as e:
+                log.error(f"Failed to close background image: {e}")
                 pass
             self.original_background_image = None
         self.cached_background_path = None
