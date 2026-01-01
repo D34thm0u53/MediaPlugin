@@ -14,6 +14,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
+import gc
+
 import sys
 import os
 import io
@@ -441,9 +443,13 @@ class ThumbnailBackground(MediaAction):
         self.last_background_path = None
         self.last_coords = None  # Track position for grid modes
 
-    
-
     def on_ready(self):
+        """
+        Initializes the optimization caches to track the current state.
+        Enables avoiding triggering an update each tick.
+        An initial update is performed to display the starting background
+        based on the current media state.
+        """
         # Clean up old cache before resetting
         if self.original_background_image is not None:
             try:
@@ -453,22 +459,20 @@ class ThumbnailBackground(MediaAction):
         self.original_background_image = None
         self.cached_background_path = None
         
-        # Initialize optimization caches with current state (no update triggered)
+        # Initialize caches with current state
         settings = self.get_settings()
         if settings is not None:
             self.last_size_mode = settings.get("size_mode", "stretch")
         else:
             self.last_size_mode = None
             
-        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
-        if isinstance(thumbnail_data, list) and thumbnail_data:
-            self.last_thumbnail_path = thumbnail_data[0]
-        else:
-            self.last_thumbnail_path = None
-            
+        # Initialize thumbnail path tracking
+        self.last_thumbnail_path = self._get_thumbnail_path()
+
+        # Initialize background path tracking
         self.last_background_path = self.get_background_path()
         
-        # Track position for grid modes
+        # Initialize position tracking for grid modes
         if hasattr(self.input_ident, 'coords'):
             self.last_coords = self.input_ident.coords
         else:
@@ -485,58 +489,73 @@ class ThumbnailBackground(MediaAction):
     def _should_update(self) -> bool:
         """Check if update is needed based on state changes."""
         
-        # Check if media is playing - early exit if not
+        # Check if media is playing
         title = self.plugin_base.mc.title(self.get_player_name())
         artist = self.plugin_base.mc.artist(self.get_player_name())
         
         # If both title and artist are None, no media is playing
         if title is None and artist is None:
-            # check if we were previously showing a thumbnail
+            # Check if we were previously showing a thumbnail
             if self.last_thumbnail_path is not None:
                 log.trace("ThumbnailBackground: Media stopped, restoring original background")
                 return True
             return False
-        
+
+        # Get current settings
         settings = self.get_settings()
         if settings is None:
             log.trace("ThumbnailBackground: No settings available, skipping update check")
             return False
         
-        # Check size mode change
+        # Compare size mode change
         size_mode = settings.get("size_mode", "stretch")
         if size_mode != self.last_size_mode:
             log.trace(f"ThumbnailBackground: Size mode changed from {self.last_size_mode} to {size_mode}")
             return True
 
-        # Check position change (relevant for grid modes)
+        # Compare position
         current_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
         if current_coords != self.last_coords:
             log.trace(f"ThumbnailBackground: Position changed from {self.last_coords} to {current_coords}")
             return True
 
-        # Check thumbnail path change (avoid loading full image)
-        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
-        thumbnail_path = None
-        if isinstance(thumbnail_data, list) and thumbnail_data:
-            thumbnail_path = thumbnail_data[0]
-        
+        # Compare thumbnail path
+        thumbnail_path = self._get_thumbnail_path()
         if thumbnail_path != self.last_thumbnail_path:
             log.trace(f"ThumbnailBackground: Thumbnail path changed from {self.last_thumbnail_path} to {thumbnail_path}")
             return True
         
-        # Check background path change
+        # Compare background path
         current_bg_path = self.get_background_path()
         if current_bg_path != self.last_background_path:
             log.trace(f"ThumbnailBackground: Background path changed from {self.last_background_path} to {current_bg_path}")
             return True
         
+        # No relevant changes detected
         return False
 
+    def _get_thumbnail_path(self) -> str | None:
+        """
+        Extract the thumbnail file path from the media controller's thumbnail data.
+        Returns None if no thumbnail is available or if the data format is unexpected.
+        """
+        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+        if isinstance(thumbnail_data, list) and thumbnail_data and thumbnail_data[0] is not None:
+            return thumbnail_data[0]
+        return None
+    
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
-        # Get parent rows (player selector only, exclude label and thumbnail toggles)
+        """Override to provide custom configuration rows for this action."""
+        # Get parent rows and find the player selector by its label
         parent_rows = super().get_config_rows()
-        # Keep only the player selector (first row)
-        rows = [parent_rows[0]]
+        rows = []
+        
+        # Find and keep only the player selector row
+        player_label = self.plugin_base.lm.get("actions.media-action.bind-to-player.label")
+        for row in parent_rows:
+            if hasattr(row, 'get_title') and row.get_title() == player_label:
+                rows.append(row)
+                break
         
         # Add size mode selector
         self.size_mode_model = Gtk.StringList()
@@ -619,26 +638,19 @@ class ThumbnailBackground(MediaAction):
         size_mode = settings.setdefault("size_mode", "stretch")
         self.last_size_mode = size_mode
         
-        # Get thumbnail
-        thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
-        thumbnail_path = None
-        if isinstance(thumbnail_data, list):
-            if thumbnail_data[0] is None:
-                self.last_thumbnail_path = None
-                self.restore_original_background()
-                return
-            thumbnail_path = thumbnail_data[0]
-            try:
-                thumbnail = Image.open(thumbnail_path)
-            except Exception:
-                self.last_thumbnail_path = None
-                self.restore_original_background()
-                return
-        else:
-            thumbnail = thumbnail_data
-                
-        if thumbnail is None:
-            self.last_thumbnail_path = None
+        # Get thumbnail path using helper method
+        thumbnail_path = self._get_thumbnail_path()
+        
+        if thumbnail_path is None:
+            self.last_thumbnail_path = ""
+            self.restore_original_background()
+            return
+        
+        # Load thumbnail image
+        try:
+            thumbnail = Image.open(thumbnail_path)
+        except Exception:
+            self.last_thumbnail_path = ""
             self.restore_original_background()
             return
         
@@ -653,7 +665,6 @@ class ThumbnailBackground(MediaAction):
         # Handle different size modes
         if size_mode == "stretch":
             # Stretch to exact deck dimensions (may distort aspect ratio)
-            full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
             self.set_stretch_background(thumbnail)
         elif size_mode == "fill":
             self.set_fill_screen_background(thumbnail)
@@ -675,7 +686,7 @@ class ThumbnailBackground(MediaAction):
     def set_stretch_background(self, thumbnail: Image.Image):
         """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
-        stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.LANCZOS)
+        stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.Resampling.LANCZOS)
         self.deck_controller.background.set_image(
             image=BackgroundImage(self.deck_controller, image=stretched_thumbnail),
             update=True
@@ -693,7 +704,7 @@ class ThumbnailBackground(MediaAction):
         new_height = int(thumb_height * scale)
         
         # Resize and center thumbnail
-        resized_thumbnail = thumbnail.resize((new_width, new_height), Image.LANCZOS)
+        resized_thumbnail = thumbnail.resize((new_width, new_height), Image.Resampling.LANCZOS)
         canvas = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
         x_offset = (full_width - new_width) // 2
@@ -707,6 +718,7 @@ class ThumbnailBackground(MediaAction):
 
     def set_grid_sized_background(self, thumbnail: Image.Image, size_mode: str):
         """Place thumbnail at specific grid size overlaid on current background."""
+        # Parse grid size
         try:
             grid_size = int(size_mode[0])
         except Exception:
@@ -729,7 +741,7 @@ class ThumbnailBackground(MediaAction):
         thumb_height = key_height * grid_size + spacing_y * (grid_size - 1)
         
         # Resize and position thumbnail
-        resized_thumbnail = thumbnail.resize((thumb_width, thumb_height), Image.LANCZOS)
+        resized_thumbnail = thumbnail.resize((thumb_width, thumb_height), Image.Resampling.LANCZOS)
         x_pos = col * (key_width + spacing_x)
         y_pos = row * (key_height + spacing_y)
         
@@ -763,8 +775,10 @@ class ThumbnailBackground(MediaAction):
         if background_path != self.cached_background_path:
             _reset_background_cache()
         
-        # Check if current background is a video/gif (should return black, not cached image)
-        is_video = background_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm', '.gif'))
+        # Check if current background is a video/animated image
+        # PIL cannot render videos, so return black canvas instead
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.gif', '.gifv'}
+        is_video = any(background_path.lower().endswith(ext) for ext in video_extensions)
         if is_video:
             _reset_background_cache()
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
@@ -773,18 +787,17 @@ class ThumbnailBackground(MediaAction):
         if self.original_background_image is not None:
             try:
                 # Return a copy to prevent modifications to the cached image
-                # This is necessary because callers may modify the returned image
-                # (e.g., pasting thumbnails in grid mode)
+                # This allows us to reuse the cached image safely in grid modes
                 return self.original_background_image.copy()
             except Exception as e:
                 log.error(f"Failed to copy cached background image: {e}")
                 _reset_background_cache()
         
-        # Load background from file
+        # No cached image - load from file
         try:
             # Load and fit image to deck size
             with Image.open(background_path) as bg_image:
-                result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.LANCZOS)
+                result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.Resampling.LANCZOS)
                 if result.mode != "RGBA":
                     result = result.convert("RGBA")
             
@@ -804,7 +817,10 @@ class ThumbnailBackground(MediaAction):
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
     
     def get_background_path(self) -> str:
-        """Get the configured background path from deck or page settings."""
+        """
+        Get the configured background path from deck or page settings.
+        Retrieve from Page, falling back to Deck if no page override is set.
+        """
         deck_settings = self.deck_controller.get_deck_settings()
         deck_bg = deck_settings.get("background", {})
         page_bg = self.deck_controller.active_page.dict.get("background", {})
@@ -826,7 +842,7 @@ class ThumbnailBackground(MediaAction):
                 if path:
                     return path
             # Page override with show disabled = use black
-            return None
+            return ""
         
         # Page not overriding - check deck background
         if deck_bg.get("enable", False):
@@ -834,7 +850,7 @@ class ThumbnailBackground(MediaAction):
             if path:
                 return path
         
-        return None
+        return ""
 
     def restore_original_background(self, force: bool = False):
         """
@@ -848,7 +864,7 @@ class ThumbnailBackground(MediaAction):
             return
         
         # Update tracking variables for no-media state
-        self.last_thumbnail_path = None
+        self.last_thumbnail_path = ""
         current_bg_path = self.get_background_path()
         self.last_background_path = current_bg_path
         
@@ -864,9 +880,9 @@ class ThumbnailBackground(MediaAction):
     def clear(self):
         log.debug("ThumbnailBackground: clear called, cleaning up cached images")
         # Reset tracking variables
-        self.last_thumbnail_path = None
+        self.last_thumbnail_path = ""
         self.last_size_mode = None
-        self.last_background_path = None
+        self.last_background_path = ""
         self.last_coords = None
         
         # Restore original background before cleanup
