@@ -442,49 +442,67 @@ class ThumbnailBackground(MediaAction):
         self.last_size_mode = None
         self.last_background_path = None
         self.last_coords = None  # Track position for grid modes
-
-    def on_ready(self):
-        """
-        Initializes the optimization caches to track the current state.
-        Enables avoiding triggering an update each tick.
-        An initial update is performed to display the starting background
-        based on the current media state.
-        """
-        # Clean up old cache before resetting
-        if self.original_background_image is not None:
-            try:
-                self.original_background_image.close()
-            except Exception:
-                pass
-        self.original_background_image = None
-        self.cached_background_path = None
         
-        # Initialize caches with current state
-        settings = self.get_settings()
-        if settings is not None:
-            self.last_size_mode = settings.get("size_mode", "stretch")
-        else:
-            self.last_size_mode = None
+        # Track rendering state for multi-thumbnail coordination
+        self.rendered_thumbnail = None  # Store our rendered thumbnail for compositing
+
+    def _get_all_thumbnail_actions(self):
+        """Get all ThumbnailBackground actions on the current page, sorted by type and position."""
+        if not hasattr(self, 'page') or self.page is None:
+            return [self]
+        
+        actions = []
+        try:
+            # Iterate through all action objects on the page
+            for input_type in self.page.action_objects.values():
+                for identifier in input_type.values():
+                    for state in identifier.values():
+                        for action in state.values():
+                            if isinstance(action, ThumbnailBackground):
+                                actions.append(action)
+        except Exception as e:
+            log.debug(f"Failed to collect all thumbnail actions while iterating through page.action_objects hierarchy: {e}")
+            return [self]
+        
+        # Sort by layering order: Fill -> Stretch -> Grid (top-left to bottom-right)
+        def get_sort_key(action):
+            settings = action.get_settings()
+            size_mode = settings.get("size_mode", "stretch") if settings else "stretch"
             
-        # Initialize thumbnail path tracking
-        self.last_thumbnail_path = self._get_thumbnail_path()
-
-        # Initialize background path tracking
-        self.last_background_path = self.get_background_path()
+            # Priority order: fill=0, stretch=1, grid modes=2
+            if size_mode == "fill":
+                priority = 0
+            elif size_mode == "stretch":
+                priority = 1
+            else:  # Grid modes (1x1, 2x2, 3x3, 4x4)
+                priority = 2
+            
+            # Within same priority, sort by position (row, col)
+            if hasattr(action.input_ident, 'coords'):
+                row, col = action.input_ident.coords
+                return (priority, row, col)
+            # Actions without coordinates are sorted after all positioned actions
+            return (priority, float("inf"), float("inf"))
         
-        # Initialize position tracking for grid modes
-        if hasattr(self.input_ident, 'coords'):
-            self.last_coords = self.input_ident.coords
-        else:
-            self.last_coords = None
+        actions.sort(key=get_sort_key)
+        return actions
+    
+    def _composite_all_thumbnails(self):
+        """Composite all thumbnail actions onto the base background."""
+        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         
-        # Trigger initial update to display start state
-        self.update_image()
-
-    def on_tick(self):
-        # Optimization: Only update if something changed
-        if self._should_update():
-            self.update_image()
+        # Start with the base background
+        composite = self.get_original_background(full_width, full_height)
+        
+        # Layer each thumbnail action's rendered image
+        for action in self._get_all_thumbnail_actions():
+            if action.rendered_thumbnail is not None:
+                try:
+                    composite.paste(action.rendered_thumbnail, (0, 0), action.rendered_thumbnail)
+                except Exception as e:
+                    log.debug(f"Failed to composite thumbnail: {e}")
+        
+        return composite
     
     def _should_update(self) -> bool:
         """Check if update is needed based on state changes."""
@@ -543,6 +561,51 @@ class ThumbnailBackground(MediaAction):
         if isinstance(thumbnail_data, list) and thumbnail_data and thumbnail_data[0] is not None:
             return thumbnail_data[0]
         return None
+
+    def on_ready(self):
+        """
+        Initializes the optimization caches to track the current state.
+        Enables avoiding triggering an update each tick.
+        An initial update is performed to display the starting background
+        based on the current media state.
+        """
+        # Clean up old cache before resetting
+        if self.original_background_image is not None:
+            try:
+                self.original_background_image.close()
+            except Exception:
+                pass
+        self.original_background_image = None
+        self.cached_background_path = None
+        
+        # Initialize caches with current state
+        settings = self.get_settings()
+        if settings is not None:
+            self.last_size_mode = settings.get("size_mode", "stretch")
+        else:
+            self.last_size_mode = None
+            
+        # Initialize thumbnail path tracking
+        self.last_thumbnail_path = self._get_thumbnail_path()
+
+        # Initialize background path tracking
+        self.last_background_path = self.get_background_path()
+        
+        # Initialize position tracking for grid modes
+        if hasattr(self.input_ident, 'coords'):
+            self.last_coords = self.input_ident.coords
+        else:
+            self.last_coords = None
+        
+        # Trigger initial update to display start state
+        self.update_image()
+
+    def on_tick(self):
+        # Optimization: Only update if something changed
+        if self._should_update():
+            self.update_image()
+    
+    
     
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
         """Override to provide custom configuration rows for this action."""
@@ -687,8 +750,18 @@ class ThumbnailBackground(MediaAction):
         """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.Resampling.LANCZOS)
+        
+        # Convert to RGBA to ensure it has alpha channel for compositing
+        if stretched_thumbnail.mode != 'RGBA':
+            stretched_thumbnail = stretched_thumbnail.convert('RGBA')
+        
+        # Store our rendered thumbnail
+        self.rendered_thumbnail = stretched_thumbnail.copy()
+        
+        # Composite all thumbnails and set as deck background
+        composite = self._composite_all_thumbnails()
         self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=stretched_thumbnail),
+            image=BackgroundImage(self.deck_controller, image=composite),
             update=True
         )
 
@@ -705,14 +778,19 @@ class ThumbnailBackground(MediaAction):
         
         # Resize and center thumbnail
         resized_thumbnail = thumbnail.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
+        canvas = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 0))
         
         x_offset = (full_width - new_width) // 2
         y_offset = (full_height - new_height) // 2
         canvas.paste(resized_thumbnail, (x_offset, y_offset))
         
+        # Store our rendered thumbnail
+        self.rendered_thumbnail = canvas.copy()
+        
+        # Composite all thumbnails and set as deck background
+        composite = self._composite_all_thumbnails()
         self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=canvas),
+            image=BackgroundImage(self.deck_controller, image=composite),
             update=True
         )
 
@@ -735,20 +813,24 @@ class ThumbnailBackground(MediaAction):
         col, row = self.input_ident.coords
         full_width, full_height, key_width, key_height, spacing_x, spacing_y = self.get_deck_dimensions()
         
-        # Get original background and calculate thumbnail dimensions
-        background_canvas = self.get_original_background(full_width, full_height)
+        # Calculate thumbnail dimensions
         thumb_width = key_width * grid_size + spacing_x * (grid_size - 1)
         thumb_height = key_height * grid_size + spacing_y * (grid_size - 1)
         
-        # Resize and position thumbnail
+        # Resize and position thumbnail on a transparent canvas
         resized_thumbnail = thumbnail.resize((thumb_width, thumb_height), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (full_width, full_height), (0, 0, 0, 0))
         x_pos = col * (key_width + spacing_x)
         y_pos = row * (key_height + spacing_y)
+        canvas.paste(resized_thumbnail, (x_pos, y_pos))
         
-        background_canvas.paste(resized_thumbnail, (x_pos, y_pos))
+        # Store our rendered thumbnail
+        self.rendered_thumbnail = canvas.copy()
         
+        # Composite all thumbnails and set as deck background
+        composite = self._composite_all_thumbnails()
         self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=background_canvas),
+            image=BackgroundImage(self.deck_controller, image=composite),
             update=True
         )
     
@@ -863,19 +945,21 @@ class ThumbnailBackground(MediaAction):
         if not self.get_is_present() and not force:
             return
         
+        # Clear this action's rendered thumbnail
+        if self.rendered_thumbnail is not None:
+            try:
+                self.rendered_thumbnail.close()
+            except Exception as e:
+                log.error(f"Failed to close rendered thumbnail: {e}")
+        self.rendered_thumbnail = None
+        
         # Update tracking variables for no-media state
         self.last_thumbnail_path = ""
         current_bg_path = self.get_background_path()
         self.last_background_path = current_bg_path
         
-        # Get and display the original background
-        full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
-        background = self.get_original_background(full_width, full_height)
-        
-        self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=background),
-            update=True
-        )
+        # Trigger recomposite of all thumbnails (this will show base background if no others exist)
+        self._composite_all_thumbnails()
 
     def clear(self):
         log.debug("ThumbnailBackground: clear called, cleaning up cached images")
@@ -885,17 +969,32 @@ class ThumbnailBackground(MediaAction):
         self.last_background_path = ""
         self.last_coords = None
         
+        # Close and clear rendered thumbnail
+        if self.rendered_thumbnail is not None:
+            try:
+                self.rendered_thumbnail.close()
+            except Exception as e:
+                log.error(f"Failed to close rendered thumbnail during clear: {e}")
+        self.rendered_thumbnail = None
+        
         # Restore original background before cleanup
         try:
-            self.restore_original_background(force=True)
+            # Trigger recomposite to show remaining thumbnails (if any)
+            composite = self._composite_all_thumbnails()
+            self.deck_controller.background.set_image(
+                image=BackgroundImage(self.deck_controller, image=composite),
+                update=True
+            )
         except Exception as e:
             log.error(f"Failed to restore background during clear: {e}")
         
-        # Clear the key image so it shows the background properly
+        # Clear the key image so it shows the background properly (only if still present)
         try:
-            self.set_media(image=None, update=True)
+            if self.get_is_present():
+                self.set_media(image=None, update=True)
         except Exception as e:
-            log.debug(f"Failed to clear key media during cleanup: {e}")
+            # Expected during removal when settings are already cleared
+            pass
         
         # Explicitly close and delete cached image to free memory
         if self.original_background_image is not None:
@@ -912,6 +1011,9 @@ class ThumbnailBackground(MediaAction):
 
     def on_remove(self) -> None:
         self.clear()
+        # Reload the page to refresh the background with remaining actions
+        if hasattr(self, 'page') and self.page is not None:
+            self.page.reload_similar_pages(reload_self=True)
 
     def __del__(self):
         self.clear()
