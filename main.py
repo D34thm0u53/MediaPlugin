@@ -441,13 +441,7 @@ class ThumbnailBackground(MediaAction):
         self.last_background_path = None
         self.last_coords = None  # Track position for grid modes
 
-    def __del__(self):
-        """Cleanup cached images when object is destroyed."""
-        if hasattr(self, 'original_background_image') and self.original_background_image is not None:
-            try:
-                self.original_background_image.close()
-            except Exception:
-                pass
+    
 
     def on_ready(self):
         # Clean up old cache before resetting
@@ -842,9 +836,15 @@ class ThumbnailBackground(MediaAction):
         
         return None
 
-    def restore_original_background(self):
-        """Restore the page/deck background when no media is available."""
-        if not self.get_is_present():
+    def restore_original_background(self, force: bool = False):
+        """
+        Restore the page/deck background when no media is available.
+        
+        :param force: If True, forces restoration even if no media is playing.
+            Hacky way to ensure background is reset when using the remove action button in ActionConfigurator.
+        """
+        
+        if not self.get_is_present() and not force:
             return
         
         # Update tracking variables for no-media state
@@ -862,8 +862,25 @@ class ThumbnailBackground(MediaAction):
         )
 
     def clear(self):
-        if not self.get_is_present():
-            return
+        log.debug("ThumbnailBackground: clear called, cleaning up cached images")
+        # Reset tracking variables
+        self.last_thumbnail_path = None
+        self.last_size_mode = None
+        self.last_background_path = None
+        self.last_coords = None
+        
+        # Restore original background before cleanup
+        try:
+            self.restore_original_background(force=True)
+        except Exception as e:
+            log.error(f"Failed to restore background during clear: {e}")
+        
+        # Clear the key image so it shows the background properly
+        try:
+            self.set_media(image=None, update=True)
+        except Exception as e:
+            log.debug(f"Failed to clear key media during cleanup: {e}")
+        
         # Explicitly close and delete cached image to free memory
         if self.original_background_image is not None:
             try:
@@ -872,22 +889,15 @@ class ThumbnailBackground(MediaAction):
                 log.error(f"Failed to close background image: {e}")
             self.original_background_image = None
         self.cached_background_path = None
-        
-        # Reset tracking variables
-        self.last_thumbnail_path = None
-        self.last_size_mode = None
-        self.last_background_path = None
-        self.last_coords = None
-        
-        self.deck_controller.background.set_image(
-            image=None,
-            update=True
-        )
 
+    # Cleanup on removal from cache or deletion
     def on_removed_from_cache(self):
         self.clear()
 
     def on_remove(self) -> None:
+        self.clear()
+
+    def __del__(self):
         self.clear()
 
 class MediaPlugin(PluginBase):
