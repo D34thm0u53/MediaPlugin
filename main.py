@@ -12,7 +12,7 @@ from src.backend.PageManagement.Page import Page
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, GLib
 
 import gc
 
@@ -431,11 +431,42 @@ class Info(MediaAction):
         self.set_center_label(self.get_settings().get("seperator_text", "--"), font_size=12)
 
 class ThumbnailBackground(MediaAction):
+    """
+    Media action that renders one or more thumbnail images onto the deck background.
+
+    This class coordinates multiple `ThumbnailBackground` actions on the same page to
+    produce a single composited background image. It uses several class-level caches
+    and flags to avoid redundant work and reduce flicker:
+
+    * Action list cache: `_cached_actions` and `_cached_page_id` cache the set of
+      thumbnail actions for the current page so that repeated lookups are avoided.
+    * Background cache: `_original_background_image` and `_cached_background_path`
+      store the unmodified background so it can be reused while layering thumbnails
+      on top, instead of reloading or recomputing it for every instance.
+    * Batched compositing: `_pending_composite`, `_composite_in_progress`, and
+      `_idle_composite_id` implement a batched composite pattern where changes from
+      multiple actions are coalesced and applied once via a GLib idle callback.
+
+    Each instance tracks its own thumbnail path, size/placement mode, and last
+    contribution to the composite (`rendered_thumbnail`, `is_dirty`, etc.) so that
+    only changed thumbnails trigger a recomposite. The actual update of the deck
+    background is thus performed once per batch rather than once per action.
+    """
+    # Class-level cache for action list optimization
+    _cached_actions = None  # Cached list of all thumbnail actions
+    _cached_page_id = None  # ID of page for which actions are cached
+    
+    # Class-level coordinator for batched updates
+    _pending_composite = False  # Flag indicating composite is needed
+    _composite_in_progress = False  # Prevent recursive compositing
+    _idle_composite_id = None  # GLib idle callback ID for deferred execution
+    
+    # Class-level background cache (shared by all actions)
+    _original_background_image = None  # Cached original background
+    _cached_background_path = None  # Track which background is cached
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.original_background_image = None  # Cache the original background
-        self.cached_background_path = None  # Track which background is cached
         
         # Optimization: Track state to detect changes
         self.last_thumbnail_path = None
@@ -445,12 +476,22 @@ class ThumbnailBackground(MediaAction):
         
         # Track rendering state for multi-thumbnail coordination
         self.rendered_thumbnail = None  # Store our rendered thumbnail for compositing
+        self.is_dirty = False  # Flag indicating this action needs recompositing
 
     def _get_all_thumbnail_actions(self):
         """Get all ThumbnailBackground actions on the current page, sorted by type and position."""
         if not hasattr(self, 'page') or self.page is None:
             return [self]
         
+        # Use page object id as cache key
+        current_page_id = id(self.page)
+        
+        # Return cached list if valid
+        if (ThumbnailBackground._cached_actions is not None and 
+            ThumbnailBackground._cached_page_id == current_page_id):
+            return ThumbnailBackground._cached_actions
+        
+        # Cache miss - rebuild the list
         actions = []
         try:
             # Iterate through all action objects on the page
@@ -485,23 +526,114 @@ class ThumbnailBackground(MediaAction):
             return (priority, float("inf"), float("inf"))
         
         actions.sort(key=get_sort_key)
+        
+        # Cache the result
+        ThumbnailBackground._cached_actions = actions
+        ThumbnailBackground._cached_page_id = current_page_id
+        
         return actions
+    
+    def _request_composite(self):
+        """Request a composite operation. Will be batched with other requests."""
+        log.trace(f"ThumbnailBackground: _request_composite called, is_dirty was {self.is_dirty}")
+        # Mark this action as dirty
+        self.is_dirty = True
+        
+        # Set the pending flag
+        ThumbnailBackground._pending_composite = True
+        
+        # Cancel any existing timeout and schedule a new one
+        # Use a small delay (20ms) to allow all actions in current tick cycle to update
+        if ThumbnailBackground._idle_composite_id is not None:
+            log.trace("ThumbnailBackground: _request_composite - cancelling existing timeout")
+            try:
+                GLib.source_remove(ThumbnailBackground._idle_composite_id)
+            except:
+                pass  # Timeout may have already fired
+        
+        log.trace("ThumbnailBackground: _request_composite - scheduling 50ms timeout")
+        ThumbnailBackground._idle_composite_id = GLib.timeout_add(
+            50,  # milliseconds
+            self._execute_composite_callback
+        )
+    
+    def _execute_composite_callback(self):
+        """Callback for GLib.timeout that executes the composite."""
+        log.trace("ThumbnailBackground: _execute_composite_callback - timeout fired")
+        # Clear the idle callback ID
+        ThumbnailBackground._idle_composite_id = None
+        
+        # Execute the composite
+        self._execute_composite_if_needed()
+        
+        # Return False to prevent this callback from being called again
+        return False
+    
+    def _execute_composite_if_needed(self):
+        """Execute composite if pending and not already in progress."""
+        log.trace(f"ThumbnailBackground: _execute_composite_if_needed - pending={ThumbnailBackground._pending_composite}, in_progress={ThumbnailBackground._composite_in_progress}")
+        # Check if composite is needed and not already running
+        if not ThumbnailBackground._pending_composite:
+            log.trace("ThumbnailBackground: _execute_composite_if_needed - not pending, returning")
+            return
+        
+        if ThumbnailBackground._composite_in_progress:
+            log.trace("ThumbnailBackground: _execute_composite_if_needed - already in progress, returning")
+            return
+        
+        # Mark as in progress to prevent recursion
+        ThumbnailBackground._composite_in_progress = True
+        ThumbnailBackground._pending_composite = False
+        
+        try:
+            # Only composite if at least one action is dirty
+            all_actions = self._get_all_thumbnail_actions()
+            dirty_actions = [action for action in all_actions if action.is_dirty]
+            log.trace(f"ThumbnailBackground: _execute_composite_if_needed - {len(dirty_actions)} dirty actions out of {len(all_actions)} total")
+            
+            if dirty_actions:
+                log.trace("ThumbnailBackground: _execute_composite_if_needed - calling _composite_all_thumbnails")
+                composite = self._composite_all_thumbnails()
+                
+                # Apply the composite to the deck background
+                log.trace("ThumbnailBackground: _execute_composite_if_needed - applying composite to deck background")
+                self.deck_controller.background.set_image(
+                    image=BackgroundImage(self.deck_controller, image=composite),
+                    update=True
+                )
+                log.trace("ThumbnailBackground: _execute_composite_if_needed - composite applied, clearing dirty flags")
+                
+                # Clear all dirty flags
+                for action in all_actions:
+                    action.is_dirty = False
+            else:
+                log.trace("ThumbnailBackground: _execute_composite_if_needed - no dirty actions, skipping")
+        finally:
+            ThumbnailBackground._composite_in_progress = False
+            log.trace("ThumbnailBackground: _execute_composite_if_needed - complete")
     
     def _composite_all_thumbnails(self):
         """Composite all thumbnail actions onto the base background."""
+        log.trace("ThumbnailBackground: _composite_all_thumbnails - starting")
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         
         # Start with the base background
+        log.trace("ThumbnailBackground: _composite_all_thumbnails - getting original background")
         composite = self.get_original_background(full_width, full_height)
         
         # Layer each thumbnail action's rendered image
-        for action in self._get_all_thumbnail_actions():
+        all_actions = self._get_all_thumbnail_actions()
+        actions_with_thumbnails = [a for a in all_actions if a.rendered_thumbnail is not None]
+        log.trace(f"ThumbnailBackground: _composite_all_thumbnails - compositing {len(actions_with_thumbnails)} thumbnails")
+        
+        for action in all_actions:
             if action.rendered_thumbnail is not None:
                 try:
                     composite.paste(action.rendered_thumbnail, (0, 0), action.rendered_thumbnail)
                 except Exception as e:
                     log.debug(f"Failed to composite thumbnail: {e}")
         
+        log.trace("ThumbnailBackground: _composite_all_thumbnails - complete")
         return composite
     
     def _should_update(self) -> bool:
@@ -515,7 +647,6 @@ class ThumbnailBackground(MediaAction):
         if title is None and artist is None:
             # Check if we were previously showing a thumbnail
             if self.last_thumbnail_path is not None:
-                log.trace("ThumbnailBackground: Media stopped, restoring original background")
                 return True
             return False
 
@@ -569,14 +700,18 @@ class ThumbnailBackground(MediaAction):
         An initial update is performed to display the starting background
         based on the current media state.
         """
-        # Clean up old cache before resetting
-        if self.original_background_image is not None:
+        # Invalidate action list cache when page loads
+        ThumbnailBackground._cached_actions = None
+        ThumbnailBackground._cached_page_id = None
+        
+        # Clean up old background cache before resetting
+        if ThumbnailBackground._original_background_image is not None:
             try:
-                self.original_background_image.close()
+                ThumbnailBackground._original_background_image.close()
             except Exception:
                 pass
-        self.original_background_image = None
-        self.cached_background_path = None
+        ThumbnailBackground._original_background_image = None
+        ThumbnailBackground._cached_background_path = None
         
         # Initialize caches with current state
         settings = self.get_settings()
@@ -686,11 +821,16 @@ class ThumbnailBackground(MediaAction):
         settings = self.get_settings()
         selected_index = combo.get_selected()
         if selected_index < len(self.size_mode_options):
+            # Invalidate cache since size mode affects sort order (fill/stretch/grid)
+            ThumbnailBackground._cached_actions = None
+            ThumbnailBackground._cached_page_id = None
+            
             settings["size_mode"] = self.size_mode_options[selected_index]
             self.set_settings(settings)
             self.update_image()
 
     def update_image(self):
+        log.trace("ThumbnailBackground: update_image called")
         if not self.get_is_present():
             return
         
@@ -705,7 +845,7 @@ class ThumbnailBackground(MediaAction):
         thumbnail_path = self._get_thumbnail_path()
         
         if thumbnail_path is None:
-            self.last_thumbnail_path = ""
+            self.last_thumbnail_path = None
             self.restore_original_background()
             return
         
@@ -713,7 +853,7 @@ class ThumbnailBackground(MediaAction):
         try:
             thumbnail = Image.open(thumbnail_path)
         except Exception:
-            self.last_thumbnail_path = ""
+            self.last_thumbnail_path = None
             self.restore_original_background()
             return
         
@@ -728,11 +868,14 @@ class ThumbnailBackground(MediaAction):
         # Handle different size modes
         if size_mode == "stretch":
             # Stretch to exact deck dimensions (may distort aspect ratio)
+            log.trace("ThumbnailBackground: calling set_stretch_background")
             self.set_stretch_background(thumbnail)
         elif size_mode == "fill":
+            log.trace("ThumbnailBackground: calling set_fill_screen_background")
             self.set_fill_screen_background(thumbnail)
         else:
             # Grid sizes (1x1, 2x2, 3x3, 4x4)
+            log.trace(f"ThumbnailBackground: calling set_grid_sized_background with mode {size_mode}")
             self.set_grid_sized_background(thumbnail, size_mode)
 
     def get_deck_dimensions(self):
@@ -748,6 +891,7 @@ class ThumbnailBackground(MediaAction):
 
     def set_stretch_background(self, thumbnail: Image.Image):
         """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
+        log.trace("ThumbnailBackground: set_stretch_background - starting")
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         stretched_thumbnail = thumbnail.resize((full_width, full_height), Image.Resampling.LANCZOS)
         
@@ -758,12 +902,9 @@ class ThumbnailBackground(MediaAction):
         # Store our rendered thumbnail
         self.rendered_thumbnail = stretched_thumbnail.copy()
         
-        # Composite all thumbnails and set as deck background
-        composite = self._composite_all_thumbnails()
-        self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=composite),
-            update=True
-        )
+        # Request batched composite instead of executing immediately
+        log.trace("ThumbnailBackground: set_stretch_background - requesting composite")
+        self._request_composite()
 
     def set_fill_screen_background(self, thumbnail: Image.Image):
         """Scale thumbnail to fill the screen by its longest side, centered."""
@@ -787,12 +928,8 @@ class ThumbnailBackground(MediaAction):
         # Store our rendered thumbnail
         self.rendered_thumbnail = canvas.copy()
         
-        # Composite all thumbnails and set as deck background
-        composite = self._composite_all_thumbnails()
-        self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=composite),
-            update=True
-        )
+        # Request batched composite instead of executing immediately
+        self._request_composite()
 
     def set_grid_sized_background(self, thumbnail: Image.Image, size_mode: str):
         """Place thumbnail at specific grid size overlaid on current background."""
@@ -827,12 +964,8 @@ class ThumbnailBackground(MediaAction):
         # Store our rendered thumbnail
         self.rendered_thumbnail = canvas.copy()
         
-        # Composite all thumbnails and set as deck background
-        composite = self._composite_all_thumbnails()
-        self.deck_controller.background.set_image(
-            image=BackgroundImage(self.deck_controller, image=composite),
-            update=True
-        )
+        # Request batched composite instead of executing immediately
+        self._request_composite()
     
     def get_original_background(self, full_width: int, full_height: int) -> Image.Image:
         """Get the original deck or page background without any thumbnail overlays."""
@@ -840,13 +973,13 @@ class ThumbnailBackground(MediaAction):
         background_path = self.get_background_path()
         
         def _reset_background_cache():
-            if self.original_background_image is not None:
+            if ThumbnailBackground._original_background_image is not None:
                 try:
-                    self.original_background_image.close()
+                    ThumbnailBackground._original_background_image.close()
                 except Exception as e:
                     log.error(f"Failed to close background image: {e}")
-            self.original_background_image = None
-            self.cached_background_path = None
+            ThumbnailBackground._original_background_image = None
+            ThumbnailBackground._cached_background_path = None
         
         # If no background is configured, always return black (don't cache)
         if not background_path or not os.path.isfile(background_path):
@@ -854,7 +987,7 @@ class ThumbnailBackground(MediaAction):
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
         # If background path has changed, invalidate cache
-        if background_path != self.cached_background_path:
+        if background_path != ThumbnailBackground._cached_background_path:
             _reset_background_cache()
         
         # Check if current background is a video/animated image
@@ -866,11 +999,11 @@ class ThumbnailBackground(MediaAction):
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
         # Return cached background if available
-        if self.original_background_image is not None:
+        if ThumbnailBackground._original_background_image is not None:
             try:
                 # Return a copy to prevent modifications to the cached image
                 # This allows us to reuse the cached image safely in grid modes
-                return self.original_background_image.copy()
+                return ThumbnailBackground._original_background_image.copy()
             except Exception as e:
                 log.error(f"Failed to copy cached background image: {e}")
                 _reset_background_cache()
@@ -884,18 +1017,18 @@ class ThumbnailBackground(MediaAction):
                     result = result.convert("RGBA")
             
             # Cache the result with its path
-            self.original_background_image = result
-            self.cached_background_path = background_path
-            return self.original_background_image.copy()
+            ThumbnailBackground._original_background_image = result
+            ThumbnailBackground._cached_background_path = background_path
+            return ThumbnailBackground._original_background_image.copy()
         except Exception as e:
             log.warning(f"Failed to load background from {background_path}: {e}")
-            if self.original_background_image is not None:
+            if ThumbnailBackground._original_background_image is not None:
                 try:
-                    self.original_background_image.close()
+                    ThumbnailBackground._original_background_image.close()
                 except Exception as e:
                     log.error(f"Failed to close background image: {e}")
-            self.original_background_image = None
-            self.cached_background_path = None
+            ThumbnailBackground._original_background_image = None
+            ThumbnailBackground._cached_background_path = None
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
     
     def get_background_path(self) -> str:
@@ -954,17 +1087,17 @@ class ThumbnailBackground(MediaAction):
         self.rendered_thumbnail = None
         
         # Update tracking variables for no-media state
-        self.last_thumbnail_path = ""
+        self.last_thumbnail_path = None
         current_bg_path = self.get_background_path()
         self.last_background_path = current_bg_path
         
-        # Trigger recomposite of all thumbnails (this will show base background if no others exist)
-        self._composite_all_thumbnails()
+        # Request batched composite to show base background
+        self._request_composite()
 
     def clear(self):
         log.debug("ThumbnailBackground: clear called, cleaning up cached images")
         # Reset tracking variables
-        self.last_thumbnail_path = ""
+        self.last_thumbnail_path = None
         self.last_size_mode = None
         self.last_background_path = ""
         self.last_coords = None
@@ -979,12 +1112,8 @@ class ThumbnailBackground(MediaAction):
         
         # Restore original background before cleanup
         try:
-            # Trigger recomposite to show remaining thumbnails (if any)
-            composite = self._composite_all_thumbnails()
-            self.deck_controller.background.set_image(
-                image=BackgroundImage(self.deck_controller, image=composite),
-                update=True
-            )
+            # Request batched composite to show remaining thumbnails (if any)
+            self._request_composite()
         except Exception as e:
             log.error(f"Failed to restore background during clear: {e}")
         
@@ -997,19 +1126,23 @@ class ThumbnailBackground(MediaAction):
             pass
         
         # Explicitly close and delete cached image to free memory
-        if self.original_background_image is not None:
+        if ThumbnailBackground._original_background_image is not None:
             try:
-                self.original_background_image.close()
+                ThumbnailBackground._original_background_image.close()
             except Exception as e:
                 log.error(f"Failed to close background image: {e}")
-            self.original_background_image = None
-        self.cached_background_path = None
+            ThumbnailBackground._original_background_image = None
+        ThumbnailBackground._cached_background_path = None
 
     # Cleanup on removal from cache or deletion
     def on_removed_from_cache(self):
         self.clear()
 
     def on_remove(self) -> None:
+        # Invalidate action list cache since we're removing an action
+        ThumbnailBackground._cached_actions = None
+        ThumbnailBackground._cached_page_id = None
+        
         self.clear()
         # Reload the page to refresh the background with remaining actions
         if hasattr(self, 'page') and self.page is not None:
