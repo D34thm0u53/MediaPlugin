@@ -28,6 +28,8 @@ import globals as gl
 # Add plugin to sys.paths
 sys.path.append(os.path.dirname(__file__))
 
+from .settings import PluginSettings
+
 from MediaController import MediaController
 from MediaAction import MediaAction
 
@@ -1198,6 +1200,10 @@ class MediaPlugin(PluginBase):
         self.mc = MediaController()
         self.lm = self.locale_manager
         self.lm.set_to_os_default()
+        
+        # Initialize settings
+        self._settings_manager = PluginSettings(self)
+        self.has_plugin_settings = True
 
         shutil.rmtree(os.path.join(gl.DATA_PATH, "com_core447_MediaPlugin", "cache"), ignore_errors=True)
 
@@ -1300,3 +1306,6 @@ class MediaPlugin(PluginBase):
         )
 
         self.request_dbus_permission("org.mpris.MediaPlayer2.*")
+
+    def get_settings_area(self):
+        return self._settings_manager.get_settings_area()
