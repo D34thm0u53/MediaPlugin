@@ -603,6 +603,9 @@ class ThumbnailBackground(MediaAction):
                 )
                 log.trace("ThumbnailBackground: _execute_composite_if_needed - composite applied, clearing dirty flags")
                 
+                # Close the composite image to prevent memory leaks
+                composite.close()
+                
                 # Clear all dirty flags
                 for action in all_actions:
                     action.is_dirty = False
@@ -877,6 +880,9 @@ class ThumbnailBackground(MediaAction):
             # Grid sizes (1x1, 2x2, 3x3, 4x4)
             log.trace(f"ThumbnailBackground: calling set_grid_sized_background with mode {size_mode}")
             self.set_grid_sized_background(thumbnail, size_mode)
+        
+        # Close the thumbnail image to prevent memory leaks
+        thumbnail.close()
 
     def get_deck_dimensions(self):
         """Helper to get full deck dimensions."""
@@ -901,6 +907,9 @@ class ThumbnailBackground(MediaAction):
         
         # Store our rendered thumbnail
         self.rendered_thumbnail = stretched_thumbnail.copy()
+        
+        # Close intermediate image to prevent memory leaks
+        stretched_thumbnail.close()
         
         # Request batched composite instead of executing immediately
         log.trace("ThumbnailBackground: set_stretch_background - requesting composite")
@@ -927,6 +936,10 @@ class ThumbnailBackground(MediaAction):
         
         # Store our rendered thumbnail
         self.rendered_thumbnail = canvas.copy()
+        
+        # Close intermediate images to prevent memory leaks
+        resized_thumbnail.close()
+        canvas.close()
         
         # Request batched composite instead of executing immediately
         self._request_composite()
@@ -963,6 +976,10 @@ class ThumbnailBackground(MediaAction):
         
         # Store our rendered thumbnail
         self.rendered_thumbnail = canvas.copy()
+        
+        # Close intermediate images to prevent memory leaks
+        resized_thumbnail.close()
+        canvas.close()
         
         # Request batched composite instead of executing immediately
         self._request_composite()
