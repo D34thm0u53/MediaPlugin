@@ -31,6 +31,19 @@ sys.path.append(os.path.dirname(__file__))
 from MediaController import MediaController
 from MediaAction import MediaAction
 
+# File-level logger configuration
+# Users can change log level by modifying this variable
+# Available levels: TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR, CRITICAL
+LOG_LEVEL = "INFO"
+
+# Configure logger for this module
+log.remove()  # Remove default handler
+log.add(
+    sys.stderr,
+    level=LOG_LEVEL,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+)
+
 
 class Play(MediaAction):
     def __init__(self, *args, **kwargs):
@@ -1171,6 +1184,17 @@ class ThumbnailBackground(MediaAction):
 class MediaPlugin(PluginBase):
     def __init__(self):
         super().__init__()
+        
+        # Configure logger based on settings
+        settings = self.get_settings()
+        log_level = settings.get("log_level", "INFO")
+        log.remove()  # Remove default handler
+        log.add(
+            sys.stderr,
+            level=log_level,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+        )
+        
         self.mc = MediaController()
         self.lm = self.locale_manager
         self.lm.set_to_os_default()

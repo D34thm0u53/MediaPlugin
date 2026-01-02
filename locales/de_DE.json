@@ -17,5 +17,8 @@
     "actions.thumbnail-background.size-mode.label": "Miniaturbild-Größe",
     "actions.thumbnail-background.size-mode.subtitle": "Größe des Miniaturbilds auf dem Deck festlegen",
     "actions.thumbnail-background.size-mode.stretch": "Strecken um zu passen",
-    "actions.thumbnail-background.size-mode.fill": "Bildschirm füllen"
+    "actions.thumbnail-background.size-mode.fill": "Bildschirm füllen",
+    "settings.title": "Medien Plugin Einstellungen",
+    "settings.log-level.label": "Log Level",
+    "settings.log-level.subtitle": "Stellen Sie den Logging-Level für das Medien-Plugin ein"
 }

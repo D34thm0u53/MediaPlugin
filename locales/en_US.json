@@ -18,5 +18,8 @@
     "actions.thumbnail-background.size-mode.label": "Thumbnail Size",
     "actions.thumbnail-background.size-mode.subtitle": "Set the size of the thumbnail on the deck",
     "actions.thumbnail-background.size-mode.stretch": "Stretch to Fit",
-    "actions.thumbnail-background.size-mode.fill": "Fill Screen"
+    "actions.thumbnail-background.size-mode.fill": "Fill Screen",
+    "settings.title": "Media Plugin Settings",
+    "settings.log-level.label": "Log Level",
+    "settings.log-level.subtitle": "Set the logging level for the Media plugin"
 }
