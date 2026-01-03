@@ -16,6 +16,19 @@ class PluginSettings:
     def __init__(self, plugin_base: PluginBase):
         self._plugin_base = plugin_base
         self._settings_cache = None
+        self._configure_logger()
+
+    def _configure_logger(self):
+        """Configure logger with the saved log level or default to INFO."""
+        settings = self._get_cached_settings()
+        log_level = settings.get(KEY_LOG_LEVEL, "INFO")
+        
+        log.remove()  # Remove existing handlers
+        log.add(
+            sys.stderr,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+            level=log_level,
+        )
 
     def get_settings_area(self) -> Adw.PreferencesGroup:
         # Log level selector
@@ -67,16 +80,10 @@ class PluginSettings:
         self._plugin_base.set_settings(settings)
         self._invalidate_cache()
 
-    def _on_change_log_level(self, combo, *args):
+    def _on_change_log_level(self, combo, _):
         selected_index = combo.get_selected()
         log_levels = ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if selected_index < len(log_levels):
             log_level = log_levels[selected_index]
             self._update_settings(KEY_LOG_LEVEL, log_level)
-            # Reconfigure the logger with the new level
-            log.remove()  # Remove existing handlers
-            log.add(
-                sys.stderr,
-                format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-                level=log_level,
-            )
+            self._configure_logger()
