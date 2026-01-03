@@ -21,5 +21,7 @@
     "actions.thumbnail-background.size-mode.fill": "Fill Screen",
     "settings.title": "Media Plugin Settings",
     "settings.log-level.label": "Log Level",
-    "settings.log-level.subtitle": "Set the logging level for the Media plugin"
+    "settings.log-level.subtitle": "Set the logging level for the Media plugin",
+    "settings.composite-timeout.label": "Composite Batch Timeout (ms)",
+    "settings.composite-timeout.subtitle": "Delay before compositing thumbnail backgrounds (default 50ms typical)\nIncrease this number if you have multiple thumbnails on a page and one or more are not updating."
 }

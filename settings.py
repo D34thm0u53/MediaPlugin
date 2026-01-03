@@ -10,6 +10,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 KEY_LOG_LEVEL = "log_level"
+KEY_COMPOSITE_TIMEOUT = "composite_timeout"
+DEFAULT_COMPOSITE_TIMEOUT = 50
 
 
 class PluginSettings:
@@ -37,6 +39,7 @@ class PluginSettings:
             model=self._log_level_model,
             title=self._plugin_base.lm.get("settings.log-level.label"),
             subtitle=self._plugin_base.lm.get("settings.log-level.subtitle")
+            
         )
 
         # Populate log level options
@@ -44,12 +47,28 @@ class PluginSettings:
         for level in log_levels:
             self._log_level_model.append(level)
 
+        # Composite timeout spin button
+        self._composite_timeout_adjustment = Gtk.Adjustment(
+            value=DEFAULT_COMPOSITE_TIMEOUT,
+            lower=10,
+            upper=500,
+            step_increment=10,
+            page_increment=50
+        )
+        self._composite_timeout_spin = Adw.SpinRow(
+            adjustment=self._composite_timeout_adjustment,
+            title=self._plugin_base.lm.get("settings.composite-timeout.label"),
+            subtitle=self._plugin_base.lm.get("settings.composite-timeout.subtitle")
+        )
+
         self._load_settings()
         self._log_level_selector.connect("notify::selected", self._on_change_log_level)
+        self._composite_timeout_spin.connect("notify::value", self._on_change_composite_timeout)
 
         pref_group = Adw.PreferencesGroup()
         pref_group.set_title(self._plugin_base.lm.get("settings.title"))
         pref_group.add(self._log_level_selector)
+        pref_group.add(self._composite_timeout_spin)
         return pref_group
 
     def _get_cached_settings(self):
@@ -65,6 +84,7 @@ class PluginSettings:
     def _load_settings(self):
         settings = self._get_cached_settings()
         log_level = settings.get(KEY_LOG_LEVEL, "INFO")
+        composite_timeout = settings.get(KEY_COMPOSITE_TIMEOUT, DEFAULT_COMPOSITE_TIMEOUT)
 
         # Select the appropriate level
         try:
@@ -73,6 +93,7 @@ class PluginSettings:
             selected_index = 2  # Default to INFO
 
         self._log_level_selector.set_selected(selected_index)
+        self._composite_timeout_spin.set_value(composite_timeout)
 
     def _update_settings(self, key: str, value: str):
         settings = self._get_cached_settings()
@@ -87,3 +108,12 @@ class PluginSettings:
             log_level = log_levels[selected_index]
             self._update_settings(KEY_LOG_LEVEL, log_level)
             self._configure_logger()
+
+    def _on_change_composite_timeout(self, spin, _):
+        timeout = int(spin.get_value())
+        self._update_settings(KEY_COMPOSITE_TIMEOUT, timeout)
+
+    def get_composite_timeout(self) -> int:
+        """Get the configured composite timeout in milliseconds."""
+        settings = self._get_cached_settings()
+        return settings.get(KEY_COMPOSITE_TIMEOUT, DEFAULT_COMPOSITE_TIMEOUT)

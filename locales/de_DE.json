@@ -20,5 +20,7 @@
     "actions.thumbnail-background.size-mode.fill": "Bildschirm füllen",
     "settings.title": "Medien Plugin Einstellungen",
     "settings.log-level.label": "Log Level",
-    "settings.log-level.subtitle": "Stellen Sie den Logging-Level für das Medien-Plugin ein"
+    "settings.log-level.subtitle": "Stellen Sie den Logging-Level für das Medien-Plugin ein",
+    "settings.composite-timeout.label": "Composite-Timeout (ms)",
+    "settings.composite-timeout.subtitle": "Verzögerung vor dem Zusammensetzen der Miniaturhintergründe (Standard 50ms typisch)\nErhöhen Sie diesen Wert, wenn Sie mehrere Miniaturansichten auf einer Seite haben und eine oder mehrere nicht aktualisiert werden."
 }
