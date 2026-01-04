@@ -34,6 +34,10 @@ from MediaController import MediaController
 from MediaAction import MediaAction
 
 
+KEY_COMPOSITE_TIMEOUT = "composite_timeout"
+DEFAULT_COMPOSITE_TIMEOUT = 80  # milliseconds
+
+
 class Play(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
