@@ -667,8 +667,15 @@ class ThumbnailBackground(MediaAction):
             for action in all_actions:
                 if action.rendered_thumbnail is not None:
                     try:
+                        # Ensure the thumbnail is in RGBA mode and matches the composite size
+                        thumb = action.rendered_thumbnail
+                        if thumb.mode != "RGBA":
+                            thumb = thumb.convert("RGBA")
+                        if thumb.size != composite.size:
+                            thumb = thumb.resize(composite.size, Image.LANCZOS)
+
                         # Use alpha_composite for proper RGBA compositing
-                        composite.alpha_composite(action.rendered_thumbnail, (0, 0))
+                        composite.alpha_composite(thumb, (0, 0))
                     except Exception as e:
                         log.error(f"Failed to composite thumbnail: {e}")
             
@@ -809,8 +816,13 @@ class ThumbnailBackground(MediaAction):
     
     
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
-        """Override to provide custom configuration rows for this action."""
-        # Initialize parent rows (this also initializes self.player_selector)
+        # We only want the player selector from the parent, not the label/thumbnail toggles.
+        # Guard against cases where the parent failed to initialize self.player_selector.
+        rows: list[Adw.PreferencesRow] = []
+        if hasattr(self, "player_selector") and self.player_selector is not None:
+            rows.append(self.player_selector)
+        else:
+            log.error("Player selector not initialized; proceeding without it in config rows.")
         try:
             super().get_config_rows()
         except Exception as e:
