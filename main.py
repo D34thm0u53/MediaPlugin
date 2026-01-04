@@ -503,7 +503,12 @@ class ThumbnailBackground(MediaAction):
                             if isinstance(action, ThumbnailBackground):
                                 actions.append(action)
         except Exception as e:
-            log.debug(f"Failed to collect all thumbnail actions while iterating through page.action_objects hierarchy: {e}")
+            log.error(f"Failed to collect all thumbnail actions while iterating through page.action_objects hierarchy: {e}")
+            return [self]
+        
+        # If no actions found, at least include self (shouldn't happen if self is properly in action_objects)
+        if not actions:
+            log.warning("ThumbnailBackground: No thumbnail actions found on page, falling back to [self]")
             return [self]
         
         # Sort by layering order: Fill -> Stretch -> Grid (top-left to bottom-right)
@@ -523,7 +528,8 @@ class ThumbnailBackground(MediaAction):
             if hasattr(action.input_ident, 'coords'):
                 row, col = action.input_ident.coords
                 return (priority, row, col)
-            # Actions without coordinates are sorted after all positioned actions
+            
+            # Handle badly configured actions without coordinates
             return (priority, float("inf"), float("inf"))
         
         actions.sort(key=get_sort_key)
@@ -533,10 +539,11 @@ class ThumbnailBackground(MediaAction):
         ThumbnailBackground._cached_page_id = current_page_id
         
         return actions
-    
+
     def _request_composite(self):
         """Request a composite operation. Will be batched with other requests."""
-        log.trace(f"ThumbnailBackground: _request_composite called, is_dirty was {self.is_dirty}")
+        coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
+        log.trace(f"ThumbnailBackground: _request_composite called by [{coords}] with is_dirty state: [{self.is_dirty}]")
         # Mark this action as dirty
         self.is_dirty = True
         
@@ -544,17 +551,18 @@ class ThumbnailBackground(MediaAction):
         ThumbnailBackground._pending_composite = True
         
         # Cancel any existing timeout and schedule a new one
-        # Use a small delay (20ms) to allow all actions in current tick cycle to update
+        # Use a small delay to allow all actions in current tick cycle to update
         if ThumbnailBackground._idle_composite_id is not None:
             log.trace("ThumbnailBackground: _request_composite - cancelling existing timeout")
             try:
                 GLib.source_remove(ThumbnailBackground._idle_composite_id)
-            except:
-                pass  # Timeout may have already fired
-        timout = self.plugin_base.get_settings().get(KEY_COMPOSITE_TIMEOUT, DEFAULT_COMPOSITE_TIMEOUT)
-        log.trace(f"ThumbnailBackground: _request_composite - scheduling {timout}ms timeout")
+            except (OSError, ValueError):
+                pass  # Timeout may have already fired or invalid ID
+        
+        timeout = self.plugin_base.get_settings().get(KEY_COMPOSITE_TIMEOUT, DEFAULT_COMPOSITE_TIMEOUT)
+        log.trace(f"ThumbnailBackground: _request_composite - scheduling {timeout}ms timeout")
         ThumbnailBackground._idle_composite_id = GLib.timeout_add(
-            timout,  # milliseconds
+            timeout,  # milliseconds
             self._execute_composite_callback
         )
     
@@ -564,8 +572,13 @@ class ThumbnailBackground(MediaAction):
         # Clear the idle callback ID
         ThumbnailBackground._idle_composite_id = None
         
-        # Execute the composite
-        self._execute_composite_if_needed()
+        try:
+            # Execute the composite
+            self._execute_composite_if_needed()
+        except Exception as e:
+            # Ensure we always reset the in_progress flag even if something goes wrong
+            ThumbnailBackground._composite_in_progress = False
+            log.error(f"ThumbnailBackground: Exception in _execute_composite_callback: {e}", exc_info=True)
         
         # Return False to prevent this callback from being called again
         return False
@@ -608,18 +621,24 @@ class ThumbnailBackground(MediaAction):
             
             if dirty_actions:
                 log.trace("ThumbnailBackground: _execute_composite_if_needed - calling _composite_all_thumbnails")
-                composite = self._composite_all_thumbnails()
-                
-                # Apply the composite to the deck background
-                log.trace("ThumbnailBackground: _execute_composite_if_needed - applying composite to deck background")
-                self.deck_controller.background.set_image(
-                    image=BackgroundImage(self.deck_controller, image=composite),
-                    update=True
-                )
-                log.trace("ThumbnailBackground: _execute_composite_if_needed - composite applied, clearing dirty flags")
-                
-                # Close the composite image to prevent memory leaks
-                composite.close()
+                composite = None
+                try:
+                    composite = self._composite_all_thumbnails()
+                    
+                    # Apply the composite to the deck background
+                    log.trace("ThumbnailBackground: _execute_composite_if_needed - applying composite to deck background")
+                    self.deck_controller.background.set_image(
+                        image=BackgroundImage(self.deck_controller, image=composite),
+                        update=True
+                    )
+                    log.trace("ThumbnailBackground: _execute_composite_if_needed - composite applied, clearing dirty flags")
+                finally:
+                    # Always close the composite image to prevent memory leaks
+                    if composite is not None:
+                        try:
+                            composite.close()
+                        except Exception as e:
+                            log.error(f"Failed to close composite image: {e}")
                 
                 # Clear all dirty flags
                 for action in all_actions:
