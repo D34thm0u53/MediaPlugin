@@ -45,7 +45,6 @@ log.add(
     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
 
-
 class Play(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -121,7 +120,6 @@ class Play(MediaAction):
 
         self.set_media(image=image)
 
-
 class Pause(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -196,7 +194,6 @@ class Pause(MediaAction):
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
 
         self.set_media(image=image)
-
 
 class PlayPause(MediaAction):
     def __init__(self, *args, **kwargs):
