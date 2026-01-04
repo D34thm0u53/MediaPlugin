@@ -1,5 +1,5 @@
 import shutil
-from src.backend.PluginManager.ActionBase import ActionBase
+
 from src.backend.PluginManager.ActionHolder import ActionHolder
 from src.backend.PluginManager.PluginBase import PluginBase
 from src.backend.DeckManagement.InputIdentifier import Input
@@ -14,14 +14,11 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 
-import gc
-
 import sys
 import os
 import io
 from loguru import logger as log
 from PIL import Image, ImageEnhance, ImageOps
-import math
 
 import globals as gl
 
@@ -113,7 +110,6 @@ class Play(MediaAction):
 
         self.set_media(image=image)
 
-
 class Pause(MediaAction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -188,7 +184,6 @@ class Pause(MediaAction):
         image = self.generate_image(background=thumbnail, icon=image, size=size, valign=valign)
 
         self.set_media(image=image)
-
 
 class PlayPause(MediaAction):
     def __init__(self, *args, **kwargs):
@@ -592,10 +587,24 @@ class ThumbnailBackground(MediaAction):
         ThumbnailBackground._pending_composite = False
         
         try:
-            # Only composite if at least one action is dirty
+            # Get all thumbnail actions on the page
             all_actions = self._get_all_thumbnail_actions()
+            
+            # Check if there are any actions with rendered thumbnails
+            actions_with_thumbnails = [a for a in all_actions if a.rendered_thumbnail is not None]
             dirty_actions = [action for action in all_actions if action.is_dirty]
-            log.trace(f"ThumbnailBackground: _execute_composite_if_needed - {len(dirty_actions)} dirty actions out of {len(all_actions)} total")
+            log.trace(f"ThumbnailBackground: _execute_composite_if_needed - {len(dirty_actions)} dirty actions, {len(actions_with_thumbnails)} with thumbnails, {len(all_actions)} total")
+            
+            # If no actions have thumbnails to display, reload the page to restore the original background
+            if not actions_with_thumbnails:
+                log.trace("ThumbnailBackground: _execute_composite_if_needed - no thumbnails to display, reloading page to restore background")
+                # Clear dirty flags first
+                for action in all_actions:
+                    action.is_dirty = False
+                # Trigger a page reload to restore the original background
+                if hasattr(self, 'page') and self.page is not None:
+                    self.page.reload_similar_pages(reload_self=True)
+                return
             
             if dirty_actions:
                 log.trace("ThumbnailBackground: _execute_composite_if_needed - calling _composite_all_thumbnails")
@@ -1158,10 +1167,22 @@ class ThumbnailBackground(MediaAction):
         ThumbnailBackground._cached_background_path = None
 
     # Cleanup on removal from cache or deletion
+    # These Three Methods are called in different removal scenarios.
+    # Though I am not entirely sure when each is called, nor when it should be called.
+
     def on_removed_from_cache(self):
+        """
+        Seems to be called on remove via:
+        Right Click -> Remove Action
+        Select Action -> Delete Key
+        """
         self.clear()
 
     def on_remove(self) -> None:
+        """
+        Seems to be called on remove via:
+        Red Remove Action button in UI
+        """       
         # Invalidate action list cache since we're removing an action
         ThumbnailBackground._cached_actions = None
         ThumbnailBackground._cached_page_id = None
@@ -1172,6 +1193,9 @@ class ThumbnailBackground(MediaAction):
             self.page.reload_similar_pages(reload_self=True)
 
     def __del__(self):
+        """
+        * Sometimes * also called after on remove and in one case, only this was called??
+        """
         self.clear()
 
 class MediaPlugin(PluginBase):
