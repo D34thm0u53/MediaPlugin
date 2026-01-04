@@ -1070,11 +1070,19 @@ class ThumbnailBackground(MediaAction):
         self._request_composite()
     
     def get_original_background(self, full_width: int, full_height: int) -> Image.Image:
-        """Get the original deck or page background without any thumbnail overlays."""
-        # Get the current background path
+        """
+        Get the original deck or page background without any thumbnail overlays.
+        
+        Returns a copy of the cached background image to allow safe compositing.
+        Multiple thumbnails may layer onto the same base background, so each caller
+        gets an independent copy to avoid cross-contamination between composites.
+        
+        Returns a black canvas if no background is configured or if loading fails.
+        """
         background_path = self.get_background_path()
         
         def _reset_background_cache():
+            """Close and clear the cached background image."""
             if ThumbnailBackground._original_background_image is not None:
                 try:
                     ThumbnailBackground._original_background_image.close()
@@ -1085,11 +1093,13 @@ class ThumbnailBackground(MediaAction):
         
         # If no background is configured, always return black (don't cache)
         if not background_path or not os.path.isfile(background_path):
+            log.trace(f"ThumbnailBackground: No valid background configured (path={background_path})")
             _reset_background_cache()
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
-        # If background path has changed, invalidate cache
+        # Check if background path has changed - invalidate cache if so
         if background_path != ThumbnailBackground._cached_background_path:
+            log.trace(f"ThumbnailBackground: Background path changed from {ThumbnailBackground._cached_background_path} to {background_path}")
             _reset_background_cache()
         
         # Check if current background is a video/animated image
@@ -1097,22 +1107,22 @@ class ThumbnailBackground(MediaAction):
         video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.gif', '.gifv'}
         is_video = any(background_path.lower().endswith(ext) for ext in video_extensions)
         if is_video:
+            log.trace(f"ThumbnailBackground: Background is video file (not supported by PIL): {background_path}")
             _reset_background_cache()
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
         
-        # Return cached background if available
+        # Return a copy of cached background if available
         if ThumbnailBackground._original_background_image is not None:
+            log.trace(f"ThumbnailBackground: Using cached background from {background_path}")
             try:
-                # Return a copy to prevent modifications to the cached image
-                # This allows us to reuse the cached image safely in grid modes
                 return ThumbnailBackground._original_background_image.copy()
             except Exception as e:
                 log.error(f"Failed to copy cached background image: {e}")
                 _reset_background_cache()
         
-        # No cached image - load from file
+        # Cache miss - load and fit image to deck size
+        log.trace(f"ThumbnailBackground: Loading background image from {background_path}")
         try:
-            # Load and fit image to deck size
             with Image.open(background_path) as bg_image:
                 result = ImageOps.fit(bg_image.copy(), (full_width, full_height), Image.Resampling.LANCZOS)
                 if result.mode != "RGBA":
@@ -1121,16 +1131,11 @@ class ThumbnailBackground(MediaAction):
             # Cache the result with its path
             ThumbnailBackground._original_background_image = result
             ThumbnailBackground._cached_background_path = background_path
+            log.trace(f"ThumbnailBackground: Cached background image from {background_path}")
             return ThumbnailBackground._original_background_image.copy()
         except Exception as e:
             log.warning(f"Failed to load background from {background_path}: {e}")
-            if ThumbnailBackground._original_background_image is not None:
-                try:
-                    ThumbnailBackground._original_background_image.close()
-                except Exception as e:
-                    log.error(f"Failed to close background image: {e}")
-            ThumbnailBackground._original_background_image = None
-            ThumbnailBackground._cached_background_path = None
+            _reset_background_cache()
             return Image.new("RGBA", (full_width, full_height), (0, 0, 0, 255))
     
     def get_background_path(self) -> str:
@@ -1173,66 +1178,87 @@ class ThumbnailBackground(MediaAction):
         """
         Restore the page/deck background when no media is available.
         
-        :param force: If True, forces restoration even if no media is playing.
-            Hacky way to ensure background is reset when using the remove action button in ActionConfigurator.
-        """
+        Clears this action's rendered thumbnail and requests a batched composite
+        to show the base background and any remaining thumbnails from other actions.
         
+        :param force: If True, requests composite even if no thumbnail was displayed.
+            Used during action removal to ensure background is properly updated.
+        """
         if not self.get_is_present() and not force:
             return
         
+        changed = False
         # Clear this action's rendered thumbnail
         if self.rendered_thumbnail is not None:
             try:
                 self.rendered_thumbnail.close()
             except Exception as e:
                 log.error(f"Failed to close rendered thumbnail: {e}")
-        self.rendered_thumbnail = None
+            self.rendered_thumbnail = None
+            changed = True
         
         # Update tracking variables for no-media state
         self.last_thumbnail_path = None
-        current_bg_path = self.get_background_path()
-        self.last_background_path = current_bg_path
+        self.last_background_path = self.get_background_path()
         
-        # Request batched composite to show base background
-        self._request_composite()
+        # Request batched composite only if something changed or forced
+        # This avoids unnecessary page reloads when no thumbnail was displayed
+        if changed or force:
+            log.trace(f"ThumbnailBackground: Requesting composite to restore background (changed={changed}, force={force})")
+            self._request_composite()
 
     def clear(self):
+        """
+        Comprehensive cleanup when this action is being removed or deinitialized.
+        
+        Handles:
+        - Invalidating class-level caches (action list, background image)
+        - Closing and clearing this action's rendered thumbnail
+        - Clearing the key image on deck
+        - Requesting final composite to show remaining actions/background
+        
+        Called by: on_removed_from_cache(), on_remove(), __del__()
+        """
         log.debug("ThumbnailBackground: clear called, cleaning up cached images")
-        # Reset tracking variables
+        
+        # Invalidate action list cache to force rebuild without this action
+        
+        # Reset this instance's tracking variables
         self.last_thumbnail_path = None
         self.last_size_mode = None
         self.last_background_path = ""
         self.last_coords = None
         
-        # Close and clear rendered thumbnail
+        # Close and clear this action's rendered thumbnail
         if self.rendered_thumbnail is not None:
             try:
                 self.rendered_thumbnail.close()
             except Exception as e:
                 log.error(f"Failed to close rendered thumbnail during clear: {e}")
-        self.rendered_thumbnail = None
+            self.rendered_thumbnail = None
         
-        # Restore original background before cleanup
+        # Request batched composite to update background with remaining actions
         try:
-            # Request batched composite to show remaining thumbnails (if any)
             self._request_composite()
         except Exception as e:
-            log.error(f"Failed to restore background during clear: {e}")
+            log.error(f"Failed to request composite during clear: {e}")
         
-        # Clear the key image so it shows the background properly (only if still present)
+        # Clear the key image so deck shows the composited background properly
         try:
             if self.get_is_present():
                 self.set_media(image=None, update=True)
-        except Exception as e:
+        except Exception:
             # Expected during removal when settings are already cleared
             pass
         
-        # Explicitly close and delete cached image to free memory
+        # Clean up class-level background cache
+        # Note: Don't invalidate cache for all instances - only clear if explicitly needed
+        # The cache will be invalidated when background path changes or on page load
         if ThumbnailBackground._original_background_image is not None:
             try:
                 ThumbnailBackground._original_background_image.close()
             except Exception as e:
-                log.error(f"Failed to close background image: {e}")
+                log.error(f"Failed to close cached background image during clear: {e}")
             ThumbnailBackground._original_background_image = None
         ThumbnailBackground._cached_background_path = None
 
