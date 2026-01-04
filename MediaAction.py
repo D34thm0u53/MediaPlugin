@@ -11,6 +11,11 @@ from gi.repository import Gtk, Adw
 from PIL import Image, ImageEnhance
 import os
 import math
+import sys
+
+# Import plugin logger
+sys.path.insert(0, os.path.dirname(__file__))
+from log_wrapper import log
 
 class MediaAction(ActionBase):
     def __init__(self, *args, **kwargs):

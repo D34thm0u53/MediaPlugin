@@ -17,15 +17,16 @@ from gi.repository import Gtk, Adw, GLib
 import sys
 import os
 import io
-from loguru import logger as log
 from PIL import Image, ImageEnhance, ImageOps
 
 import globals as gl
 
 # Add plugin to sys.paths
-sys.path.append(os.path.dirname(__file__))
+plugin_dir = os.path.dirname(__file__)
+sys.path.insert(0, plugin_dir)
 
-from .settings import PluginSettings
+from settings import PluginSettings, KEY_LOG_LEVEL, DEFAULT_LOG_LEVEL
+from log_wrapper import log, set_log_level
 
 from MediaController import MediaController
 from MediaAction import MediaAction
@@ -812,9 +813,7 @@ class ThumbnailBackground(MediaAction):
         # Optimization: Only update if something changed
         if self._should_update():
             self.update_image()
-    
-    
-    
+        
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
         # We only want the player selector from the parent, not the label/thumbnail toggles.
         # Guard against cases where the parent failed to initialize self.player_selector.
@@ -1316,6 +1315,11 @@ class MediaPlugin(PluginBase):
         # Initialize settings
         self._settings_manager = PluginSettings(self)
         self.has_plugin_settings = True
+        
+        # Initialize log level from settings
+        settings = self.get_settings()
+        log_level = settings.get(KEY_LOG_LEVEL, DEFAULT_LOG_LEVEL)
+        set_log_level(log_level)
 
         shutil.rmtree(os.path.join(gl.DATA_PATH, "com_core447_MediaPlugin", "cache"), ignore_errors=True)
 
