@@ -13,9 +13,7 @@ import os
 import math
 import sys
 
-# Import plugin logger
-sys.path.insert(0, os.path.dirname(__file__))
-from log_wrapper import log
+from loguru import logger as log
 
 class MediaAction(ActionBase):
     def __init__(self, *args, **kwargs):

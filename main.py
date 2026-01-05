@@ -1,5 +1,5 @@
 import shutil
-
+# Import internal modules
 from src.backend.PluginManager.ActionHolder import ActionHolder
 from src.backend.PluginManager.PluginBase import PluginBase
 from src.backend.DeckManagement.InputIdentifier import Input
@@ -21,19 +21,16 @@ from PIL import Image, ImageEnhance, ImageOps
 
 import globals as gl
 
-# Add plugin to sys.paths
+# Load our submodules
 plugin_dir = os.path.dirname(__file__)
 sys.path.insert(0, plugin_dir)
 
-from settings import PluginSettings, KEY_LOG_LEVEL, DEFAULT_LOG_LEVEL
+from settings import PluginSettings, KEY_LOG_LEVEL, DEFAULT_LOG_LEVEL, KEY_COMPOSITE_TIMEOUT, DEFAULT_COMPOSITE_TIMEOUT
 from log_wrapper import log, set_log_level
 
 from MediaController import MediaController
 from MediaAction import MediaAction
 
-
-KEY_COMPOSITE_TIMEOUT = "composite_timeout"
-DEFAULT_COMPOSITE_TIMEOUT = 80  # milliseconds
 
 
 class Play(MediaAction):
