@@ -813,7 +813,7 @@ class ThumbnailBackground(MediaAction):
         
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
         # We only want the player selector from the parent, not the label/thumbnail toggles.
-        # Guard against cases where the parent failed to initialize self.player_selector.
+        # Guard against cases where the parent failed to initialize self.player_selector. 
         rows: list[Adw.PreferencesRow] = []
         if hasattr(self, "player_selector") and self.player_selector is not None:
             rows.append(self.player_selector)
@@ -1311,7 +1311,7 @@ class MediaPlugin(PluginBase):
         
         # Initialize settings
         self._settings_manager = PluginSettings(self)
-        self.has_plugin_settings = True
+        self.has_plugin_settings = False
         
         # Initialize log level from settings
         settings = self.get_settings()
