@@ -18,5 +18,10 @@
     "actions.thumbnail-background.size-mode.label": "Thumbnail Size",
     "actions.thumbnail-background.size-mode.subtitle": "Set the size of the thumbnail on the deck",
     "actions.thumbnail-background.size-mode.stretch": "Stretch to Fit",
-    "actions.thumbnail-background.size-mode.fill": "Fill Screen"
+    "actions.thumbnail-background.size-mode.fill": "Fill Screen",
+    "settings.title": "Plugin Settings",
+    "settings.composite-timeout.label": "Composite Timeout",
+    "settings.composite-timeout.subtitle": "Delay before compositing thumbnails (ms)",
+    "settings.log-level.label": "Log Level",
+    "settings.log-level.subtitle": "Control the verbosity of plugin logging"
 }
