@@ -451,6 +451,7 @@ class ThumbnailBackground(MediaAction):
     only changed thumbnails trigger a recomposite. The actual update of the deck
     background is thus performed once per batch rather than once per action.
     """
+    
     # Class-level cache for action list optimization
     _cached_actions = None  # Cached list of all thumbnail actions
     _cached_page_id = None  # ID of page for which actions are cached
@@ -540,7 +541,7 @@ class ThumbnailBackground(MediaAction):
 
     def _request_composite(self):
         """Request a composite operation. Will be batched with other requests."""
-        coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
+        coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None # type: ignore[attr-defined]
         log.trace(f"ThumbnailBackground: _request_composite called by [{coords}] with is_dirty state: [{self.is_dirty}]")
         # Mark this action as dirty
         self.is_dirty = True
@@ -626,7 +627,7 @@ class ThumbnailBackground(MediaAction):
                     # Apply the composite to the deck background
                     log.trace("ThumbnailBackground: _execute_composite_if_needed - applying composite to deck background")
                     self.deck_controller.background.set_image(
-                        image=BackgroundImage(self.deck_controller, image=composite),
+                        image=BackgroundImage(self.deck_controller, image=composite), # type: ignore[attr-defined] 
                         update=True
                     )
                     log.trace("ThumbnailBackground: _execute_composite_if_needed - composite applied, clearing dirty flags")
@@ -670,7 +671,7 @@ class ThumbnailBackground(MediaAction):
                         if thumb.mode != "RGBA":
                             thumb = thumb.convert("RGBA")
                         if thumb.size != composite.size:
-                            thumb = thumb.resize(composite.size, Image.LANCZOS)
+                            thumb = thumb.resize(composite.size, Image.Resampling.LANCZOS)
 
                         # Use alpha_composite for proper RGBA compositing
                         composite.alpha_composite(thumb, (0, 0))
@@ -692,8 +693,8 @@ class ThumbnailBackground(MediaAction):
         """Check if update is needed based on state changes."""
         
         # Check if media is playing
-        title = self.plugin_base.mc.title(self.get_player_name())
-        artist = self.plugin_base.mc.artist(self.get_player_name())
+        title = self.plugin_base.mc.title(self.get_player_name()) # type: ignore[attr-defined]
+        artist = self.plugin_base.mc.artist(self.get_player_name()) # type: ignore[attr-defined]
         
         # If both title and artist are None, no media is playing
         if title is None and artist is None:
@@ -715,7 +716,7 @@ class ThumbnailBackground(MediaAction):
             return True
 
         # Compare position
-        current_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None
+        current_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None # type: ignore[attr-defined]
         if current_coords != self.last_coords:
             log.trace(f"ThumbnailBackground: Position changed from {self.last_coords} to {current_coords}")
             return True
@@ -741,7 +742,7 @@ class ThumbnailBackground(MediaAction):
         Returns None if no thumbnail is available or if the data format is unexpected.
         """
         try:
-            thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name())
+            thumbnail_data = self.plugin_base.mc.thumbnail(self.get_player_name()) # type: ignore[attr-defined]
             if isinstance(thumbnail_data, list) and thumbnail_data:
                 first_item = thumbnail_data[0]
                 # Validate that the first item is a non-empty string and a valid file
@@ -792,7 +793,7 @@ class ThumbnailBackground(MediaAction):
             
             # Initialize position tracking for grid modes
             if hasattr(self.input_ident, 'coords'):
-                self.last_coords = self.input_ident.coords
+                self.last_coords = self.input_ident.coords # type: ignore[attr-defined]
             else:
                 self.last_coords = None
             
@@ -818,7 +819,7 @@ class ThumbnailBackground(MediaAction):
         if hasattr(self, "player_selector") and self.player_selector is not None:
             rows.append(self.player_selector)
         else:
-            log.error("Player selector not initialized; proceeding without it in config rows.")
+            log.warning("Player selector not initialized; proceeding without it in config rows.")
         try:
             super().get_config_rows()
         except Exception as e:
@@ -831,8 +832,8 @@ class ThumbnailBackground(MediaAction):
         self.size_mode_model = Gtk.StringList()
         self.size_mode_selector = Adw.ComboRow(
             model=self.size_mode_model,
-            title=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.label"),
-            subtitle=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.subtitle")
+            title=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.label"),  # type: ignore[attr-defined]
+            subtitle=self.plugin_base.lm.get("actions.thumbnail-background.size-mode.subtitle")  # type: ignore[attr-defined]
         )
         
         # Populate size options
@@ -841,8 +842,8 @@ class ThumbnailBackground(MediaAction):
             ("2x2", "2x2"),
             ("3x3", "3x3"),
             ("4x4", "4x4"),
-            ("stretch", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.stretch")),
-            ("fill", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.fill"))
+            ("stretch", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.stretch")),  # type: ignore[attr-defined]
+            ("fill", self.plugin_base.lm.get("actions.thumbnail-background.size-mode.fill"))  # type: ignore[attr-defined]
         ]
         
         self.size_mode_options = [opt[0] for opt in size_options]
@@ -941,7 +942,7 @@ class ThumbnailBackground(MediaAction):
         self.last_thumbnail_path = thumbnail_path
         self.last_background_path = self.get_background_path()
         if hasattr(self.input_ident, 'coords'):
-            self.last_coords = self.input_ident.coords
+            self.last_coords = self.input_ident.coords # type: ignore[attr-defined]
         else:
             self.last_coords = None
         
@@ -964,7 +965,7 @@ class ThumbnailBackground(MediaAction):
     def get_deck_dimensions(self):
         """Helper to get full deck dimensions."""
         key_rows, key_cols = self.deck_controller.deck.key_layout()
-        key_width, key_height = self.deck_controller.get_key_image_size()
+        key_width, key_height = self.deck_controller.get_key_image_size()  # type: ignore
         spacing_x, spacing_y = self.deck_controller.key_spacing
         
         full_width = key_width * key_cols + spacing_x * (key_cols - 1)
@@ -1047,7 +1048,7 @@ class ThumbnailBackground(MediaAction):
             self.set_stretch_background(thumbnail)
             return
         
-        col, row = self.input_ident.coords
+        col, row = self.input_ident.coords  # type: ignore[attr-defined]
         full_width, full_height, key_width, key_height, spacing_x, spacing_y = self.get_deck_dimensions()
         
         # Calculate thumbnail dimensions
@@ -1322,7 +1323,7 @@ class MediaPlugin(PluginBase):
 
         self.play_holder = ActionHolder(
             plugin_base=self,
-            action_base=Play,
+            action_base=Play, # type: ignore[arg-type]
             action_id_suffix="Play",
             action_name=self.lm.get("actions.play.name"),
             action_support={
@@ -1335,7 +1336,7 @@ class MediaPlugin(PluginBase):
 
         self.pause_holder = ActionHolder(
             plugin_base=self,
-            action_base=Pause,
+            action_base=Pause,  # type: ignore[arg-type]
             action_id_suffix="Pause",
             action_name=self.lm.get("actions.pause.name"),
             action_support={
@@ -1348,7 +1349,7 @@ class MediaPlugin(PluginBase):
 
         self.play_pause_holder = ActionHolder(
             plugin_base=self,
-            action_base=PlayPause,
+            action_base=PlayPause, # type: ignore[arg-type]
             action_id_suffix="PlayPause",
             action_name=self.lm.get("actions.play-pause.name"),
             action_support={
@@ -1361,7 +1362,7 @@ class MediaPlugin(PluginBase):
 
         self.next_holder = ActionHolder(
             plugin_base=self,
-            action_base=Next,
+            action_base=Next,  # type: ignore[arg-type]
             action_id_suffix="Next",
             action_name=self.lm.get("actions.next.name"),
             action_support={
@@ -1374,7 +1375,7 @@ class MediaPlugin(PluginBase):
 
         self.previous_holder = ActionHolder(
             plugin_base=self,
-            action_base=Previous,
+            action_base=Previous, # type: ignore[arg-type]
             action_id_suffix="Previous",
             action_name=self.lm.get("actions.previous.name"),
             action_support={
@@ -1387,7 +1388,7 @@ class MediaPlugin(PluginBase):
 
         self.info_holder = ActionHolder(
             plugin_base=self,
-            action_base=Info,
+            action_base=Info, # type: ignore[arg-type]
             action_id_suffix="Info",
             action_name=self.lm.get("actions.info.name"),
             action_support={
@@ -1400,7 +1401,7 @@ class MediaPlugin(PluginBase):
 
         self.thumbnail_holder = ActionHolder(
             plugin_base=self,
-            action_base=ThumbnailBackground,
+            action_base=ThumbnailBackground, # type: ignore[arg-type]
             action_id_suffix="Thumbnail",
             action_name=self.lm.get("actions.thumbnail.name"),
             action_support={

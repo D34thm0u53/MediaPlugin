@@ -19,7 +19,7 @@ AVAILABLE_LOG_LEVELS = ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 
 
 class PluginSettings:
-    def __init__(self, plugin_base: PluginBase):
+    def __init__(self, plugin_base: PluginBase.PluginBase):
         self._plugin_base = plugin_base
         self._settings_cache = None
 
@@ -35,8 +35,8 @@ class PluginSettings:
         )
         self._composite_timeout_spin = Adw.SpinRow(
             adjustment=self._composite_timeout_adjustment,
-            title=self._plugin_base.lm.get("settings.composite-timeout.label"),
-            subtitle=self._plugin_base.lm.get("settings.composite-timeout.subtitle")
+            title=self._plugin_base.lm.get("settings.composite-timeout.label"), # type: ignore
+            subtitle=self._plugin_base.lm.get("settings.composite-timeout.subtitle")  # type: ignore
         )
 
         # Log level combo box
@@ -46,8 +46,8 @@ class PluginSettings:
         
         self._log_level_combo = Adw.ComboRow(
             model=self._log_level_model,
-            title=self._plugin_base.lm.get("settings.log-level.label"),
-            subtitle=self._plugin_base.lm.get("settings.log-level.subtitle")
+            title=self._plugin_base.lm.get("settings.log-level.label"),  # type: ignore
+            subtitle=self._plugin_base.lm.get("settings.log-level.subtitle")  # type: ignore
         )
 
         self._load_settings()
@@ -55,7 +55,7 @@ class PluginSettings:
         self._log_level_combo.connect("notify::selected", self._on_change_log_level)
 
         pref_group = Adw.PreferencesGroup()
-        pref_group.set_title(self._plugin_base.lm.get("settings.title"))
+        pref_group.set_title(self._plugin_base.lm.get("settings.title"))  # type: ignore
         pref_group.add(self._composite_timeout_spin)
         pref_group.add(self._log_level_combo)
         return pref_group
@@ -91,7 +91,7 @@ class PluginSettings:
 
     def _on_change_composite_timeout(self, spin, _):
         timeout = int(spin.get_value())
-        self._update_settings(KEY_COMPOSITE_TIMEOUT, timeout)
+        self._update_settings(KEY_COMPOSITE_TIMEOUT, str(timeout))
 
     def _on_change_log_level(self, combo, _):
         selected_index = combo.get_selected()
