@@ -757,7 +757,7 @@ class ThumbnailBackground(MediaAction):
 
     def on_ready(self):
         """
-        Initializes the optimization caches to track the current state.
+        Initialize optimization caches to track the current state.
         Enables avoiding triggering an update each tick.
         An initial update is performed to display the starting background
         based on the current media state.
@@ -771,36 +771,17 @@ class ThumbnailBackground(MediaAction):
             try:
                 ThumbnailBackground._original_background_image.close()
             except Exception as e:
-                log.error(f"Failed to close cached background image during on_ready: {e}")
+                log.error(f"Failed to close cached background image: {e}")
         
         # Always reset cache references
         ThumbnailBackground._original_background_image = None
         ThumbnailBackground._cached_background_path = None
         
-        # Initialize caches with current state
         try:
-            settings = self.get_settings()
-            if settings is not None:
-                self.last_size_mode = settings.get("size_mode", "stretch")
-            else:
-                self.last_size_mode = None
-                
-            # Initialize thumbnail path tracking
-            self.last_thumbnail_path = self._get_thumbnail_path()
-
-            # Initialize background path tracking
-            self.last_background_path = self.get_background_path()
-            
-            # Initialize position tracking for grid modes
-            if hasattr(self.input_ident, 'coords'):
-                self.last_coords = self.input_ident.coords # type: ignore[attr-defined]
-            else:
-                self.last_coords = None
-            
-            # Trigger initial update to display start state
+            self._initialize_caches()
             self.update_image()
         except Exception as e:
-            log.error(f"Failed to initialize ThumbnailBackground in on_ready: {e}", exc_info=True)
+            log.error(f"Failed to initialize ThumbnailBackground: {e}", exc_info=True)
             # Set defaults to ensure action is in a safe state
             self.last_size_mode = "stretch"
             self.last_thumbnail_path = None
@@ -813,20 +794,18 @@ class ThumbnailBackground(MediaAction):
             self.update_image()
         
     def get_config_rows(self) -> "list[Adw.PreferencesRow]":
-        # We only want the player selector from the parent, not the label/thumbnail toggles.
-        # Guard against cases where the parent failed to initialize self.player_selector. 
-        rows: list[Adw.PreferencesRow] = []
-        if hasattr(self, "player_selector") and self.player_selector is not None:
-            rows.append(self.player_selector)
-        else:
-            log.warning("Player selector not initialized; proceeding without it in config rows.")
+        # Call parent to initialize player_selector (we only want this row, not label/thumbnail toggles)
         try:
             super().get_config_rows()
         except Exception as e:
             log.error(f"Failed to initialize parent config rows: {e}")
         
-        # We only want the player selector from the parent, not the label/thumbnail toggles
-        rows = [self.player_selector]
+        # Get player selector from parent initialization
+        if not hasattr(self, "player_selector") or self.player_selector is None:
+            log.warning("Player selector not initialized in config rows")
+            rows = []
+        else:
+            rows = [self.player_selector]
         
         # Add size mode selector
         self.size_mode_model = Gtk.StringList()
@@ -859,12 +838,8 @@ class ThumbnailBackground(MediaAction):
     def load_size_mode_default(self):
         """
         Load the default size mode setting and apply it to the size mode selector.
-        This reads the ``"size_mode"`` value from this action's persisted settings
-        via the ``get_settings`` method. If no value is present, it stores and uses
-        ``"stretch"`` as the default, matching the legacy behavior. The method
-        then selects the corresponding option in ``self.size_mode_selector``; if
-        the stored value is not one of the known options, it falls back to the
-        index used for the legacy ``"stretch"`` mode.
+        Load from actions settings, load and store ``"stretch"`` as the default,
+        If an invalid option is stored, fall back to the index for ``"stretch"``.
         """
         settings = self.get_settings()
         if settings is None:
@@ -883,9 +858,8 @@ class ThumbnailBackground(MediaAction):
     
     def on_change_size_mode(self, combo, *args):
         """
-        When the user selects a different size for the thumbnail display in the UI, this
-        callback stores the chosen mode in the action settings and triggers a background
-        image refresh to apply the new sizing behavior.
+        When the user selects a different size for the thumbnail display in the UI:
+        trigger a background image refresh to apply the new sizing behavior.
         :param combo: The size mode selector widget (e.g. an Adw.ComboRow) that
             emitted the change notification.
         :param args: Additional signal parameters provided by the toolkit,
@@ -910,6 +884,12 @@ class ThumbnailBackground(MediaAction):
         self.update_image()
 
     def update_image(self):
+        """
+        Update the background image with a thumbnail based on current settings.
+        Retrieves the thumbnail path, loads the image, and applies the appropriate
+        sizing/positioning mode (stretch, fill, or grid-based).
+        Restore the original background if the thumbnail cannot be loaded.
+        """
         log.trace("ThumbnailBackground: update_image called")
         if not self.get_is_present():
             return
@@ -962,6 +942,23 @@ class ThumbnailBackground(MediaAction):
         # Close the thumbnail image to prevent memory leaks
         thumbnail.close()
 
+    def _close_rendered_thumbnail(self) -> None:
+        """Close and clear the rendered thumbnail to prevent memory leaks."""
+        if self.rendered_thumbnail is not None:
+            try:
+                self.rendered_thumbnail.close()
+            except Exception:
+                pass
+            self.rendered_thumbnail = None
+    
+    def _initialize_caches(self) -> None:
+        """Initialize tracking caches with current state."""
+        settings = self.get_settings()
+        self.last_size_mode = settings.get("size_mode", "stretch") if settings else "stretch"
+        self.last_thumbnail_path = self._get_thumbnail_path()
+        self.last_background_path = self.get_background_path()
+        self.last_coords = self.input_ident.coords if hasattr(self.input_ident, 'coords') else None  # type: ignore[attr-defined]
+
     def get_deck_dimensions(self):
         """Helper to get full deck dimensions."""
         key_rows, key_cols = self.deck_controller.deck.key_layout()
@@ -975,16 +972,9 @@ class ThumbnailBackground(MediaAction):
 
     def set_stretch_background(self, thumbnail: Image.Image):
         """Scale the given thumbnail to exactly match the full deck dimensions and set it"""        
-        log.trace("ThumbnailBackground: set_stretch_background - starting")
         full_width, full_height, _, _, _, _ = self.get_deck_dimensions()
         
-        # Close previous thumbnail to prevent memory leaks
-        if self.rendered_thumbnail is not None:
-            try:
-                self.rendered_thumbnail.close()
-            except Exception:
-                pass
-            
+        self._close_rendered_thumbnail()
         self.rendered_thumbnail = thumbnail.resize((full_width, full_height), Image.Resampling.LANCZOS)
         
         # Convert to RGBA to ensure it has alpha channel for compositing
@@ -993,8 +983,6 @@ class ThumbnailBackground(MediaAction):
             self.rendered_thumbnail.close()
             self.rendered_thumbnail = new_img
         
-        # Request batched composite instead of executing immediately
-        log.trace("ThumbnailBackground: set_stretch_background - requesting composite")
         self._request_composite()
 
     def set_fill_screen_background(self, thumbnail: Image.Image):
@@ -1016,20 +1004,10 @@ class ThumbnailBackground(MediaAction):
         y_offset = (full_height - new_height) // 2
         canvas.paste(resized_thumbnail, (x_offset, y_offset))
         
-        # Close previous thumbnail to prevent memory leaks
-        if self.rendered_thumbnail is not None:
-            try:
-                self.rendered_thumbnail.close()
-            except Exception:
-                pass
-            
-        # Store our rendered thumbnail (take ownership of canvas)
+        self._close_rendered_thumbnail()
         self.rendered_thumbnail = canvas
-        
-        # Close intermediate images to prevent memory leaks
         resized_thumbnail.close()
         
-        # Request batched composite instead of executing immediately
         self._request_composite()
 
     def set_grid_sized_background(self, thumbnail: Image.Image, size_mode: str):
@@ -1062,20 +1040,10 @@ class ThumbnailBackground(MediaAction):
         y_pos = row * (key_height + spacing_y)
         canvas.paste(resized_thumbnail, (x_pos, y_pos))
         
-        # Close previous thumbnail to prevent memory leaks
-        if self.rendered_thumbnail is not None:
-            try:
-                self.rendered_thumbnail.close()
-            except Exception:
-                pass
-            
-        # Store our rendered thumbnail (take ownership of canvas)
+        self._close_rendered_thumbnail()
         self.rendered_thumbnail = canvas
-        
-        # Close intermediate images to prevent memory leaks
         resized_thumbnail.close()
         
-        # Request batched composite instead of executing immediately
         self._request_composite()
     
     def get_original_background(self, full_width: int, full_height: int) -> Image.Image:
@@ -1218,19 +1186,14 @@ class ThumbnailBackground(MediaAction):
 
     def clear(self):
         """
-        Comprehensive cleanup when this action is being removed or deinitialized.
-        
-        Handles:
-        - Invalidating class-level caches (action list, background image)
-        - Closing and clearing this action's rendered thumbnail
-        - Clearing the key image on deck
-        - Requesting final composite to show remaining actions/background
-        
-        Called by: on_removed_from_cache(), on_remove(), __del__()
+        Cleanup cached images and reset state when action is removed.
+        - Invalidate class-level caches ( background image)
+        - Close and clear this action's rendered thumbnail
+        - Clear the key image on deck
+        - Request final composite to show remaining actions/background
         """
+
         log.debug("ThumbnailBackground: clear called, cleaning up cached images")
-        
-        # Invalidate action list cache to force rebuild without this action
         
         # Reset this instance's tracking variables
         self.last_thumbnail_path = None
@@ -1257,6 +1220,7 @@ class ThumbnailBackground(MediaAction):
             if self.get_is_present():
                 self.set_media(image=None, update=True)
         except Exception:
+            pass
             # Expected during removal when settings are already cleared
             pass
         
