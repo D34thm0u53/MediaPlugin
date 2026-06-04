@@ -63,7 +63,8 @@ class MediaController:
                     iface = dbus.Interface(player, 'org.mpris.MediaPlayer2.Player')
                     ifaces.append(iface)
             except dbus.exceptions.DBusException as e:
-                log.warning(e)
+                if e.get_dbus_name() != "com.github.altdesktop.playerctld.NoActivePlayer":
+                    log.warning(e)
         return ifaces
     
     def pause(self, player_name: str = None):
